@@ -222,23 +222,23 @@ RETURNING i.*;
 
 -- name: UpdateIssueStatus :one
 -- Workspace_id in the WHERE clause is a SQL-layer tenant guard; see DeleteIssue.
-UPDATE issue SET
+UPDATE issue AS i SET
     status = $2,
-    position = CASE WHEN status IS DISTINCT FROM $2 THEN (
+    position = CASE WHEN i.status IS DISTINCT FROM $2 THEN (
         SELECT COALESCE(MIN(target.position), 0) - 1
         FROM issue AS target
-        WHERE target.workspace_id = issue.workspace_id
+        WHERE target.workspace_id = i.workspace_id
           AND target.status = $2
-          AND target.id <> issue.id
-    ) ELSE position END,
-    revision = revision + CASE WHEN status IS DISTINCT FROM $2 THEN 1 ELSE 0 END,
-    last_activity_at = CASE WHEN status IS DISTINCT FROM $2
-        THEN GREATEST(COALESCE(last_activity_at, updated_at), now())
-        ELSE last_activity_at
+          AND target.id <> i.id
+    ) ELSE i.position END,
+    revision = i.revision + CASE WHEN i.status IS DISTINCT FROM $2 THEN 1 ELSE 0 END,
+    last_activity_at = CASE WHEN i.status IS DISTINCT FROM $2
+        THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
+        ELSE i.last_activity_at
     END,
     updated_at = now()
-WHERE id = $1 AND workspace_id = $3
-RETURNING *;
+WHERE i.id = $1 AND i.workspace_id = $3
+RETURNING i.*;
 
 -- name: CreateIssueWithOrigin :one
 INSERT INTO issue (
