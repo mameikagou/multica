@@ -154,7 +154,20 @@ WITH candidate AS (
         COALESCE(sqlc.narg('priority')::text, i.priority) AS next_priority,
         sqlc.narg('assignee_type')::text AS next_assignee_type,
         sqlc.narg('assignee_id')::uuid AS next_assignee_id,
-        COALESCE(sqlc.narg('position')::double precision, i.position) AS next_position,
+        CASE
+            WHEN sqlc.narg('position')::double precision IS NOT NULL
+                THEN sqlc.narg('position')::double precision
+            WHEN sqlc.narg('status')::text IS NOT NULL
+                 AND i.status IS DISTINCT FROM sqlc.narg('status')::text
+                THEN (
+                    SELECT COALESCE(MIN(target.position), 0) - 1
+                    FROM issue AS target
+                    WHERE target.workspace_id = i.workspace_id
+                      AND target.status = sqlc.narg('status')::text
+                      AND target.id <> i.id
+                )
+            ELSE i.position
+        END AS next_position,
         sqlc.narg('start_date')::date AS next_start_date,
         sqlc.narg('due_date')::date AS next_due_date,
         sqlc.narg('parent_issue_id')::uuid AS next_parent_issue_id,
@@ -211,6 +224,13 @@ RETURNING i.*;
 -- Workspace_id in the WHERE clause is a SQL-layer tenant guard; see DeleteIssue.
 UPDATE issue SET
     status = $2,
+    position = CASE WHEN status IS DISTINCT FROM $2 THEN (
+        SELECT COALESCE(MIN(target.position), 0) - 1
+        FROM issue AS target
+        WHERE target.workspace_id = issue.workspace_id
+          AND target.status = $2
+          AND target.id <> issue.id
+    ) ELSE position END,
     revision = revision + CASE WHEN status IS DISTINCT FROM $2 THEN 1 ELSE 0 END,
     last_activity_at = CASE WHEN status IS DISTINCT FROM $2
         THEN GREATEST(COALESCE(last_activity_at, updated_at), now())

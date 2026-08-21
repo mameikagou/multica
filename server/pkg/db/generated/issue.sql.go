@@ -1554,7 +1554,20 @@ WITH candidate AS (
         COALESCE($5::text, i.priority) AS next_priority,
         $6::text AS next_assignee_type,
         $7::uuid AS next_assignee_id,
-        COALESCE($8::double precision, i.position) AS next_position,
+        CASE
+            WHEN $8::double precision IS NOT NULL
+                THEN $8::double precision
+            WHEN $4::text IS NOT NULL
+                 AND i.status IS DISTINCT FROM $4::text
+                THEN (
+                    SELECT COALESCE(MIN(target.position), 0) - 1
+                    FROM issue AS target
+                    WHERE target.workspace_id = i.workspace_id
+                      AND target.status = $4::text
+                      AND target.id <> i.id
+                )
+            ELSE i.position
+        END AS next_position,
         $9::date AS next_start_date,
         $10::date AS next_due_date,
         $11::uuid AS next_parent_issue_id,
@@ -1679,6 +1692,13 @@ func (q *Queries) UpdateIssue(ctx context.Context, arg UpdateIssueParams) (Issue
 const updateIssueStatus = `-- name: UpdateIssueStatus :one
 UPDATE issue SET
     status = $2,
+    position = CASE WHEN status IS DISTINCT FROM $2 THEN (
+        SELECT COALESCE(MIN(target.position), 0) - 1
+        FROM issue AS target
+        WHERE target.workspace_id = issue.workspace_id
+          AND target.status = $2
+          AND target.id <> issue.id
+    ) ELSE position END,
     revision = revision + CASE WHEN status IS DISTINCT FROM $2 THEN 1 ELSE 0 END,
     last_activity_at = CASE WHEN status IS DISTINCT FROM $2
         THEN GREATEST(COALESCE(last_activity_at, updated_at), now())
