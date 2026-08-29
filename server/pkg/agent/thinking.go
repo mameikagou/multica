@@ -694,8 +694,11 @@ func ValidateThinkingLevelWith(loadCatalog func() (Catalog, error), providerType
 
 // ValidateServiceTier reports whether value is advertised by the current
 // Codex catalog for the explicit model. An empty value is always valid and
-// means "inherit runtime configuration". An empty Codex model fails closed:
-// its effective model comes from config.toml and may not support the tier.
+// means "inherit runtime configuration". Codex's "default" sentinel is also
+// always valid: it explicitly selects standard routing and is intentionally
+// not advertised as an alternative tier in the model catalog. An empty Codex
+// model otherwise fails closed because its effective model comes from
+// config.toml and may not support the requested tier.
 func ValidateServiceTier(ctx context.Context, providerType string, cmd Command, model, value string) (bool, error) {
 	return ValidateServiceTierWith(catalogLoader(ctx, providerType, cmd), providerType, model, value)
 }
@@ -704,6 +707,9 @@ func ValidateServiceTier(ctx context.Context, providerType string, cmd Command, 
 // catalog loader. See ValidateThinkingLevelWith for why the daemon needs one.
 func ValidateServiceTierWith(loadCatalog func() (Catalog, error), providerType, model, value string) (bool, error) {
 	if value == "" {
+		return true, nil
+	}
+	if providerType == "codex" && value == codexStandardServiceTier {
 		return true, nil
 	}
 	if providerType != "codex" || model == "" {

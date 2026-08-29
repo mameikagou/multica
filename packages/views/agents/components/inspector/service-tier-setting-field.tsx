@@ -55,6 +55,7 @@ export function ServiceTierSettingField({
       <ServiceTierPicker
         value={value}
         tiers={tiers}
+        provider={provider}
         canEdit={canEdit}
         onChange={onChange}
       />
@@ -65,17 +66,34 @@ export function ServiceTierSettingField({
 function ServiceTierPicker({
   value,
   tiers,
+  provider,
   canEdit,
   onChange,
 }: {
   value: string;
   tiers: RuntimeModelServiceTier[];
+  provider: string;
   canEdit: boolean;
   onChange: (next: string) => Promise<void> | void;
 }) {
   const { t } = useT("agents");
   const [open, setOpen] = useState(false);
-  const selected = value ? tiers.find((tier) => tier.id === value) : undefined;
+  const availableTiers =
+    provider === "codex"
+      ? [
+          {
+            id: "default",
+            name: t(($) => $.pickers.service_tier_standard),
+            description: t(
+              ($) => $.pickers.service_tier_standard_description,
+            ),
+          },
+          ...tiers.filter((tier) => tier.id !== "default"),
+        ]
+      : tiers;
+  const selected = value
+    ? availableTiers.find((tier) => tier.id === value)
+    : undefined;
   const triggerLabel =
     selected?.name || value || t(($) => $.pickers.service_tier_default);
   const triggerTitle = t(($) => $.pickers.service_tier_tooltip, {
@@ -125,7 +143,7 @@ function ServiceTierPicker({
         </>
       }
     >
-      {tiers.map((tier) => (
+      {availableTiers.map((tier) => (
         <PickerItem
           key={tier.id}
           selected={tier.id === value}

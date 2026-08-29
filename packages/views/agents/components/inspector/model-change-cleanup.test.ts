@@ -64,6 +64,18 @@ describe("buildModelChangeUpdate (MUL-5390)", () => {
     ).toEqual({ model: "gpt-5.6-sol" });
   });
 
+  it("keeps Codex explicit standard across model changes", () => {
+    expect(
+      buildModelChangeUpdate({
+        provider: "codex",
+        model: "gpt-5.4-mini",
+        thinkingLevel: "",
+        serviceTier: "default",
+        catalog: CATALOG,
+      }),
+    ).toEqual({ model: "gpt-5.4-mini" });
+  });
+
   it("clears only the unsupported half", () => {
     expect(
       buildModelChangeUpdate({

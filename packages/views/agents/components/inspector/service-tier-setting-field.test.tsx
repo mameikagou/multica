@@ -108,6 +108,19 @@ describe("ServiceTierSettingField", () => {
     expect(onChange).toHaveBeenCalledWith("priority");
   });
 
+  it("offers explicit standard speed separately from the runtime default", async () => {
+    const { onChange } = renderField();
+
+    await screen.findByText("Speed");
+    fireEvent.click(screen.getByRole("button"));
+    expect(
+      await screen.findByText("Original speed and standard usage"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Standard"));
+
+    expect(onChange).toHaveBeenCalledWith("default");
+  });
+
   it("hides when the model has no tiers and no value is persisted", async () => {
     mockInitiateListModels.mockResolvedValue(
       listResult([{ id: "gpt-5.4-mini", label: "GPT-5.4 mini" }]),

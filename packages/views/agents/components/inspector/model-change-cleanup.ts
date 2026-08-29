@@ -60,9 +60,11 @@ export function buildModelChangeUpdate(input: {
   );
   if (input.thinkingLevel && !supportsThinking) update.thinking_level = "";
 
-  const supportsTier = (entry.service_tiers ?? []).some(
-    (tier) => tier.id === input.serviceTier,
-  );
+  // Codex uses "default" as an explicit-standard sentinel. It is valid for
+  // every model but intentionally absent from the alternative-tier catalog.
+  const supportsTier =
+    (input.provider === "codex" && input.serviceTier === "default") ||
+    (entry.service_tiers ?? []).some((tier) => tier.id === input.serviceTier);
   if (input.serviceTier && !supportsTier) update.service_tier = "";
 
   return update;

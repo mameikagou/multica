@@ -986,6 +986,8 @@ func TestValidateServiceTierCodexPerModelCatalog(t *testing.T) {
 		want     bool
 	}{
 		{provider: "codex", model: "gpt-5.6-sol", tier: "priority", want: true},
+		{provider: "codex", model: "gpt-5.6-sol", tier: "default", want: true},
+		{provider: "codex", model: "", tier: "default", want: true},
 		{provider: "codex", model: "gpt-5.6-luna", tier: "priority", want: false},
 		{provider: "codex", model: "", tier: "priority", want: false},
 		{provider: "claude", model: "gpt-5.6-sol", tier: "priority", want: false},
@@ -1215,7 +1217,7 @@ func TestApplyCodexReasoningEffort_PreservesPreExistingConfig(t *testing.T) {
 
 func TestApplyCodexServiceTier_ThreePoints(t *testing.T) {
 	t.Parallel()
-	for _, tier := range []string{"", "priority", "future-fast"} {
+	for _, tier := range []string{"", "default", "priority", "future-fast"} {
 		t.Run(tier, func(t *testing.T) {
 			for _, params := range []map[string]any{
 				{"model": "gpt-5.6-sol", "cwd": "/work"},
