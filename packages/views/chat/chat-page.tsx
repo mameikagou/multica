@@ -13,7 +13,10 @@ import {
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useChatStore } from "@multica/core/chat";
-import { chatQuickActionsPendingOptions } from "@multica/core/chat/queries";
+import {
+  chatQuickActionsPendingOptions,
+  sortChatSessions,
+} from "@multica/core/chat/queries";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { useQuickActionsPendingTimeout } from "@multica/core/chat/use-quick-actions-pending-timeout";
 import { useQuickActionsFailureToast } from "./components/use-quick-actions-failure-toast";
@@ -62,6 +65,11 @@ export function ChatPage() {
   const isCompact = useIsCompact();
 
   const c = useChatController({ isActive: true });
+  const {
+    sessions: chatSessions,
+    sessionsLoaded,
+    handleSelectSession: selectSession,
+  } = c;
   const { data: quickActionsPending = null } = useQuery(
     chatQuickActionsPendingOptions(c.activeSessionId ?? ""),
   );
@@ -117,6 +125,30 @@ export function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- react to store only
   }, [c.activeSessionId]);
 
+  // A bare Chat navigation should be immediately useful: once the list has
+  // loaded, open the first active row instead of leaving the detail pane on a
+  // second-click prompt. Explicit `?session=` and `?agent=` intents always win.
+  // The one-shot ref is also load-bearing on compact layouts: after the user
+  // presses Back to return to the thread list, the resulting bare URL must not
+  // immediately reopen the same conversation.
+  const defaultSelectionHandled = useRef(false);
+  useEffect(() => {
+    if (
+      defaultSelectionHandled.current ||
+      urlSession ||
+      urlAgent ||
+      !sessionsLoaded
+    ) {
+      return;
+    }
+    defaultSelectionHandled.current = true;
+    if (useChatStore.getState().activeSessionId) return;
+    const latest = sortChatSessions(
+      chatSessions.filter((session) => session.status === "active"),
+    )[0];
+    if (latest) selectSession(latest);
+  }, [urlSession, urlAgent, sessionsLoaded, chatSessions, selectSession]);
+
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "multica_chat_layout",
   });
@@ -134,6 +166,7 @@ export function ChatPage() {
   };
 
   const handleSelect = (session: ChatSession) => {
+    defaultSelectionHandled.current = true;
     supersedeAgentIntent();
     c.handleSelectSession(session);
     setComposingNew(false);
@@ -158,6 +191,7 @@ export function ChatPage() {
   };
 
   const startNewChat = (agent: Agent | null) => {
+    defaultSelectionHandled.current = true;
     // A manual ⊕ pick outranks a pending deep link; when called FROM the
     // intent effect the ref is already set to this param, so this is a no-op.
     supersedeAgentIntent();
@@ -357,6 +391,7 @@ export function ChatPage() {
               variant="ghost"
               size="sm"
               onClick={() => {
+                defaultSelectionHandled.current = true;
                 c.setActiveSession(null);
                 setComposingNew(false);
               }}
