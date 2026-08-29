@@ -149,6 +149,48 @@ func TestNoAutoReloadFlagRegisteredOnBothDaemonCommands(t *testing.T) {
 	}
 }
 
+func TestBuildDaemonStartArgsForwardsNoPlatformContext(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("no-platform-context", false, "")
+	if err := cmd.Flags().Set("no-platform-context", "true"); err != nil {
+		t.Fatalf("set flag: %v", err)
+	}
+
+	args := buildDaemonStartArgs(cmd)
+	want := []string{"daemon", "start", "--foreground", "--no-platform-context"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Fatalf("buildDaemonStartArgs() = %q, want %q", args, want)
+	}
+}
+
+func TestBuildDaemonStartArgsForwardsPlatformContextMode(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("platform-context", "", "")
+	cmd.Flags().Bool("no-platform-context", false, "")
+	if err := cmd.Flags().Set("platform-context", "minimal"); err != nil {
+		t.Fatalf("set flag: %v", err)
+	}
+
+	args := buildDaemonStartArgs(cmd)
+	want := []string{"daemon", "start", "--foreground", "--platform-context", "minimal"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Fatalf("buildDaemonStartArgs() = %q, want %q", args, want)
+	}
+}
+
+func TestNoPlatformContextFlagRegisteredOnBothDaemonCommands(t *testing.T) {
+	t.Parallel()
+
+	for _, cmd := range []*cobra.Command{daemonStartCmd, daemonRestartCmd} {
+		if cmd.Flags().Lookup("platform-context") == nil {
+			t.Errorf("daemon %s is missing --platform-context", cmd.Name())
+		}
+		if cmd.Flags().Lookup("no-platform-context") == nil {
+			t.Errorf("daemon %s is missing --no-platform-context", cmd.Name())
+		}
+	}
+}
+
 func TestWorkspacesRootFlagRegisteredOnBothDaemonCommands(t *testing.T) {
 	t.Parallel()
 
