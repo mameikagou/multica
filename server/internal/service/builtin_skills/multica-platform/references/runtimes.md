@@ -105,6 +105,15 @@ hard filesystem confidentiality: a process under the same OS user can still open
 an explicitly known Owner path. Dedicated Unix users, containers, VMs, or an
 equivalent OS boundary are required for that stronger isolation.
 
+Host operators can set `platform_context_mode` in the human profile (or start
+the daemon with `--platform-context` / `MULTICA_PLATFORM_CONTEXT`). `full`
+preserves the historical workflow brief; `minimal` keeps only runtime facts and
+a neutral catalog of task-bound skills, so server-provided skills stay visible
+without activation rules; `off` removes the brief and server-provided skills.
+`--no-platform-context` remains an alias for `off`. User-installed and
+workspace-assigned skills remain available in every mode. This is a host-profile
+setting: task-local config cannot reconfigure the daemon.
+
 ## Debugging an agent that did not run
 
 Check in this order:
