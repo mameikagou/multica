@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -469,7 +470,7 @@ func TestLockReusablePriorEnvRootNeverWritesOutsideWorkspacesRoot(t *testing.T) 
 			d := &Daemon{logger: discardLogger()}
 			d.cfg.WorkspacesRoot = workspacesRoot
 
-			claim, _, _, ok := d.lockReusablePriorEnvRoot(Task{
+			claim, _, _, ok := d.lockReusablePriorEnvRoot(context.Background(), Task{
 				ID:           "01a01ec0-e69d-7000-8000-0123456789ab",
 				WorkspaceID:  "ws-1",
 				AgentID:      "agent-1",
@@ -533,7 +534,7 @@ func TestLockReusablePriorEnvRootLocksAValidatedRoot(t *testing.T) {
 	d := &Daemon{logger: discardLogger()}
 	d.cfg.WorkspacesRoot = root
 
-	claim, canonical, _, ok := d.lockReusablePriorEnvRoot(task, nil, "")
+	claim, canonical, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if !ok {
 		t.Fatal("a fully provenanced managed workdir was refused for reuse")
 	}
@@ -559,17 +560,172 @@ func TestLockReusablePriorEnvRootLocksAValidatedRoot(t *testing.T) {
 	}
 
 	// A concurrent continuation of the same task must not get the same root.
-	if second, _, _, ok := d.lockReusablePriorEnvRoot(task, nil, ""); ok {
+	if second, _, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, ""); ok {
 		second.Release()
 		t.Fatal("two continuations locked the same prior workdir at once")
 	}
 
 	claim.Release()
-	again, _, _, ok := d.lockReusablePriorEnvRoot(task, nil, "")
+	again, _, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if !ok {
 		t.Fatal("prior workdir stayed locked after release")
 	}
 	again.Release()
+}
+
+// TestLockReusablePriorEnvRootWaitsForSupersededChatTurn covers the handoff
+// race between a cancelled chat turn and its replacement. The replacement may
+// be claimed before the old process has observed cancellation and released the
+// shared environment. It must wait for that execution's explicit release
+// signal and preserve the provider session, rather than immediately falling
+// back to a fresh root and transcript replay.
+func TestLockReusablePriorEnvRootWaitsForSupersededChatTurn(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workDir := filepath.Join(root, "ws-chat", "0123456789ab", "workdir")
+	writeChatTaskMarker(t, workDir, "agent-chat", "chat-session")
+	writeChatManagedEnvProvenance(t, workDir, "ws-chat", "chat-session", "agent-chat")
+
+	task := Task{
+		ID:             "task-chat-follow-up",
+		WorkspaceID:    "ws-chat",
+		AgentID:        "agent-chat",
+		ChatSessionID:  "chat-session",
+		PriorSessionID: "provider-session",
+		PriorWorkDir:   workDir,
+	}
+	d := &Daemon{logger: discardLogger()}
+	d.cfg.WorkspacesRoot = root
+
+	active, _, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
+	if !ok || active == nil {
+		t.Fatal("failed to lock the active chat environment")
+	}
+	type lockResult struct {
+		claim     *execenv.EnvRootClaim
+		canonical string
+		ok        bool
+	}
+	result := make(chan lockResult, 1)
+	go func() {
+		continuation, canonical, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
+		result <- lockResult{claim: continuation, canonical: canonical, ok: ok}
+	}()
+
+	select {
+	case got := <-result:
+		if got.claim != nil {
+			d.releaseEnvRootClaim(got.claim)
+		}
+		t.Fatal("chat continuation returned before the active turn released its environment")
+	case <-time.After(50 * time.Millisecond):
+	}
+	d.releaseEnvRootClaim(active)
+
+	got := <-result
+	if !got.ok || got.claim == nil {
+		t.Fatal("chat continuation fell back instead of waiting for the active turn")
+	}
+	defer d.releaseEnvRootClaim(got.claim)
+	if got.canonical == "" {
+		t.Fatal("chat continuation lost the reusable workdir")
+	}
+}
+
+// TestLockReusablePriorEnvRootStopsWaitingOnCancellation pins the other side
+// of the signal handoff: there is no fixed five-second timer, but the task's
+// preparation deadline/cancellation still stops the wait immediately.
+func TestLockReusablePriorEnvRootStopsWaitingOnCancellation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workDir := filepath.Join(root, "ws-chat", "0123456789ab", "workdir")
+	writeChatTaskMarker(t, workDir, "agent-chat", "chat-session")
+	writeChatManagedEnvProvenance(t, workDir, "ws-chat", "chat-session", "agent-chat")
+	task := Task{
+		ID:             "task-chat-follow-up",
+		WorkspaceID:    "ws-chat",
+		AgentID:        "agent-chat",
+		ChatSessionID:  "chat-session",
+		PriorSessionID: "provider-session",
+		PriorWorkDir:   workDir,
+	}
+	d := &Daemon{logger: discardLogger()}
+	d.cfg.WorkspacesRoot = root
+
+	active, _, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
+	if !ok || active == nil {
+		t.Fatal("failed to lock the active chat environment")
+	}
+	defer d.releaseEnvRootClaim(active)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	claim, _, _, ok := d.lockReusablePriorEnvRoot(ctx, task, nil, "")
+	if claim != nil {
+		d.releaseEnvRootClaim(claim)
+	}
+	if ok {
+		t.Fatal("cancelled chat continuation acquired the active environment")
+	}
+}
+
+// TestEnvRootClaimHandoffUsesCanonicalIdentity covers the production shape on
+// macOS, where a configured workspaces root may contain a symlink component
+// (/tmp -> /private/tmp). Fresh claims retain the configured spelling while
+// reuse validation returns a canonical path; both must still address the same
+// release signal.
+func TestEnvRootClaimHandoffUsesCanonicalIdentity(t *testing.T) {
+	t.Parallel()
+
+	realRoot := t.TempDir()
+	aliasParent := t.TempDir()
+	aliasRoot := filepath.Join(aliasParent, "workspaces")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	d := &Daemon{logger: discardLogger()}
+	claim, err := d.claimEnvRoot(execenv.RootDirParams{
+		WorkspacesRoot: aliasRoot,
+		WorkspaceID:    "ws-chat",
+		TaskID:         "01a01ec0-e69d-7000-8000-0123456789ab",
+	})
+	if err != nil {
+		t.Fatalf("claim fresh env root: %v", err)
+	}
+
+	canonicalRoot, err := filepath.EvalSymlinks(claim.RootDir())
+	if err != nil {
+		t.Fatalf("resolve claimed root: %v", err)
+	}
+	canonicalWorkspace, err := filepath.EvalSymlinks(aliasRoot)
+	if err != nil {
+		t.Fatalf("resolve workspace root: %v", err)
+	}
+	rel, err := filepath.Rel(canonicalWorkspace, canonicalRoot)
+	if err != nil {
+		t.Fatalf("relative root: %v", err)
+	}
+	wsRoot, err := os.OpenRoot(canonicalWorkspace)
+	if err != nil {
+		t.Fatalf("open workspace root: %v", err)
+	}
+	defer wsRoot.Close()
+
+	second, _, released, err := d.lockEnvRootForReuse(wsRoot, rel, canonicalRoot)
+	if second != nil {
+		d.releaseEnvRootClaim(second)
+	}
+	if !errors.Is(err, execenv.ErrEnvRootBusy) || released == nil {
+		t.Fatalf("busy canonical path did not return the fresh claim's release signal: claim=%v signal=%v err=%v", second, released != nil, err)
+	}
+	d.releaseEnvRootClaim(claim)
+	select {
+	case <-released:
+	default:
+		t.Fatal("fresh claim release did not close the canonical handoff signal")
+	}
 }
 
 // TestLockReusablePriorEnvRootSurvivesRetargetAfterValidation is the TOCTOU
@@ -610,7 +766,7 @@ func TestLockReusablePriorEnvRootSurvivesRetargetAfterValidation(t *testing.T) {
 	}
 	t.Cleanup(func() { reuseLockTestHook = nil })
 
-	claim, _, _, ok := d.lockReusablePriorEnvRoot(task, nil, "")
+	claim, _, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if claim != nil {
 		claim.Release()
 	}
@@ -656,7 +812,7 @@ func TestLockReusablePriorEnvRootRejectsIdentitySwap(t *testing.T) {
 	}
 	t.Cleanup(func() { reuseLockTestHook = nil })
 
-	claim, used, _, ok := d.lockReusablePriorEnvRoot(task, nil, "")
+	claim, used, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if claim != nil {
 		claim.Release()
 	}
@@ -724,7 +880,7 @@ func TestLockReusablePriorEnvRootSurvivesWorkspacesRootSwap(t *testing.T) {
 	}
 	t.Cleanup(func() { reuseLockTestHook = nil })
 
-	claim, _, _, ok := d.lockReusablePriorEnvRoot(task, nil, "")
+	claim, _, _, ok := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if claim != nil {
 		claim.Release()
 	}
