@@ -110,3 +110,24 @@ func TestSyncPlatformRuntimeBriefModesReplaceAndCleanManagedBlock(t *testing.T) 
 		t.Fatalf("cleanup changed repository instructions:\n got %q\nwant %q", cleaned, userContent)
 	}
 }
+
+func TestBuildNativePlatformRuntimeBriefHonorsContextMode(t *testing.T) {
+	ctx := execenv.TaskContextForEnv{AgentSkills: []execenv.SkillContextForEnv{{
+		Name:        "multica-example",
+		Description: "Use when operating an example Multica resource.",
+	}}}
+
+	full := buildNativePlatformRuntimeBrief("codex", ctx, cli.PlatformContextFull)
+	if !strings.Contains(full, "Always Use") {
+		t.Fatalf("full native context is missing the historical workflow rules:\n%s", full)
+	}
+
+	minimal := buildNativePlatformRuntimeBrief("codex", ctx, cli.PlatformContextMinimal)
+	if !strings.Contains(minimal, "multica-example") || strings.Contains(minimal, "Always Use") || strings.Contains(minimal, "## Workflow") {
+		t.Fatalf("minimal native context has the wrong policy surface:\n%s", minimal)
+	}
+
+	if off := buildNativePlatformRuntimeBrief("codex", ctx, cli.PlatformContextOff); off != "" {
+		t.Fatalf("off native context = %q, want empty", off)
+	}
+}

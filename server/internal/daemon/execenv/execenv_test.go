@@ -64,6 +64,65 @@ func TestPredictRootDir(t *testing.T) {
 	}
 }
 
+func TestPrepareCodexNativeWorkDirLeavesUserDirectoryUntouched(t *testing.T) {
+	root := t.TempDir()
+	nativeDir := t.TempDir()
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+	resumeSource := filepath.Join(t.TempDir(), "sessions")
+	const resumeID = "01901234-5678-7abc-8def-0123456789ab"
+	rolloutDir := filepath.Join(resumeSource, "2026", "08", "29")
+	if err := os.MkdirAll(rolloutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolloutDir, "rollout-test-"+resumeID+".jsonl"), []byte("prior conversation\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(nativeDir, "AGENTS.md")
+	const original = "user-owned instructions\n"
+	if err := os.WriteFile(sentinel, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot:            root,
+		WorkspaceID:               "workspace-1",
+		TaskID:                    "task-1",
+		Provider:                  "codex",
+		NativeWorkDir:             nativeDir,
+		CodexResumeSessionID:      resumeID,
+		CodexResumeSessionsSource: resumeSource,
+		Task: TaskContextForEnv{
+			AgentID:       "agent-1",
+			ChatSessionID: "chat-1",
+		},
+	}, slog.Default())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	if env.WorkDir != nativeDir || !env.NativeWorkDir || env.LocalDirectory {
+		t.Fatalf("unexpected environment: %+v", env)
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != original {
+		t.Fatalf("user AGENTS.md changed: got %q err=%v", got, err)
+	}
+	entries, err := os.ReadDir(nativeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "AGENTS.md" {
+		t.Fatalf("native workdir received daemon sidecars: %v", entries)
+	}
+	if env.CodexHome == "" || !strings.HasPrefix(env.CodexHome, env.RootDir+string(filepath.Separator)) {
+		t.Fatalf("CODEX_HOME %q is not task-private under %q", env.CodexHome, env.RootDir)
+	}
+	if !CodexResumeRolloutPresent(env.CodexHome, resumeID) {
+		t.Fatal("prior managed rollout was not migrated into the native conversation store")
+	}
+}
+
 func TestResolveRootDirFreezesReadableNamesBeforePrepare(t *testing.T) {
 	t.Parallel()
 

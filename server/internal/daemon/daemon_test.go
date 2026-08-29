@@ -1967,6 +1967,7 @@ func TestGateResumeToReachableSession(t *testing.T) {
 		// local_directory case (GH #6806). Zero value keeps the cwd-keyed
 		// providers' behaviour.
 		sessionHomeUnreachable bool
+		workdirIndependent     bool
 		wantSession            string
 		wantReused             bool
 	}{
@@ -1985,6 +1986,15 @@ func TestGateResumeToReachableSession(t *testing.T) {
 			envDir:      "/ws/task-b/workdir",
 			wantSession: "",
 			wantReused:  false,
+		},
+		{
+			name:               "native codex cwd migration keeps session",
+			sessionID:          "sess-1",
+			priorDir:           "/ws/task-a/workdir",
+			envDir:             "/code",
+			workdirIndependent: true,
+			wantSession:        "sess-1",
+			wantReused:         true,
 		},
 		{
 			name:        "session without recorded workdir drops session",
@@ -2039,7 +2049,7 @@ func TestGateResumeToReachableSession(t *testing.T) {
 			task := Task{PriorSessionID: tt.sessionID, PriorWorkDir: priorDir}
 			taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: tt.sessionID != ""}
 
-			reused := gateResumeToReachableSession(&task, &taskCtx, "claude", envDir, !tt.sessionHomeUnreachable, slog.Default())
+			reused := gateResumeToReachableSession(&task, &taskCtx, "claude", envDir, !tt.sessionHomeUnreachable, tt.workdirIndependent, slog.Default())
 
 			if reused != tt.wantReused {
 				t.Fatalf("reused = %v, want %v", reused, tt.wantReused)
@@ -2084,7 +2094,7 @@ func TestGatePiResumeToSessionFile(t *testing.T) {
 			task := Task{PriorSessionID: sessionFile, PriorWorkDir: priorDir}
 			taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: true}
 
-			reachable := gateResumeToReachableSession(&task, &taskCtx, provider, envDir, true, slog.Default())
+			reachable := gateResumeToReachableSession(&task, &taskCtx, provider, envDir, true, false, slog.Default())
 
 			if !reachable {
 				t.Fatal("Pi-family session file should remain reachable across workdirs")
@@ -2114,7 +2124,7 @@ func TestGatePiResumeDropsMissingSessionFile(t *testing.T) {
 	task := Task{PriorSessionID: missingSession, PriorWorkDir: workDir}
 	taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: true}
 
-	reachable := gateResumeToReachableSession(&task, &taskCtx, "pi", workDir, true, slog.Default())
+	reachable := gateResumeToReachableSession(&task, &taskCtx, "pi", workDir, true, false, slog.Default())
 
 	if reachable {
 		t.Fatal("missing Pi session file was treated as reachable")

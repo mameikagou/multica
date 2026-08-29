@@ -35,6 +35,7 @@ var configSetSupportedKeys = []string{
 	"device_name",
 	"runtime_name",
 	"workspaces_root",
+	"codex_native_workdir",
 	"max_concurrent_tasks",
 	"poll_interval",
 	"heartbeat_interval",
@@ -52,12 +53,12 @@ var configSetCmd = &cobra.Command{
 	Short: "Set a CLI configuration value",
 	Long: "Supported keys: " +
 		"server_url, app_url, workspace_id, " +
-		"device_name, runtime_name, workspaces_root, max_concurrent_tasks, poll_interval, " +
+		"device_name, runtime_name, workspaces_root, codex_native_workdir, max_concurrent_tasks, poll_interval, " +
 		"heartbeat_interval, agent_timeout, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload, " +
 		"platform_context_mode.\n\n" +
-		"The daemon keys (device_name, runtime_name, workspaces_root, max_concurrent_tasks, " +
+		"The daemon keys (device_name, runtime_name, workspaces_root, codex_native_workdir, max_concurrent_tasks, " +
 		"poll_interval, heartbeat_interval, agent_timeout, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload, " +
@@ -103,6 +104,7 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "device_name:", valueOrDefault(cfg.DeviceName, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "runtime_name:", valueOrDefault(cfg.RuntimeName, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "workspaces_root:", valueOrDefault(cfg.WorkspacesRoot, "(not set)"))
+	fmt.Fprintf(os.Stdout, "%-34s %s\n", "codex_native_workdir:", valueOrDefault(cfg.CodexNativeWorkDir, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "max_concurrent_tasks:", intOrDefault(cfg.MaxConcurrentTasks, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "poll_interval:", valueOrDefault(cfg.PollInterval, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "heartbeat_interval:", valueOrDefault(cfg.HeartbeatInterval, "(not set)"))
@@ -177,6 +179,17 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 			return fmt.Errorf("resolve workspaces_root: %w", err)
 		}
 		cfg.WorkspacesRoot = root
+	case "codex_native_workdir":
+		value = strings.TrimSpace(value)
+		if value == "" {
+			cfg.CodexNativeWorkDir = ""
+			return nil
+		}
+		root, err := filepath.Abs(value)
+		if err != nil {
+			return fmt.Errorf("resolve codex_native_workdir: %w", err)
+		}
+		cfg.CodexNativeWorkDir = root
 	case "max_concurrent_tasks":
 		if value == "" {
 			cfg.MaxConcurrentTasks = 0

@@ -63,6 +63,10 @@ type CodexHomeOptions struct {
 	// whole shared history back in. Empty means a fresh thread (no rollout to
 	// expose). See prepareCodexSessionsDir (MUL-4424).
 	ResumeSessionID string
+	// ResumeSessionsSource optionally names another scoped sessions directory
+	// that already contains ResumeSessionID. Native cwd migration uses the
+	// prior managed task home here; only that single rollout is exposed.
+	ResumeSessionsSource string
 	// IsLocalDirectory marks a task whose env root is never reused across task
 	// IDs — every local_directory task, in_place or worktree. Worktree tasks
 	// get a fresh env root per task just like in-place ones do
@@ -569,6 +573,10 @@ func dirStat(dir string) (newest time.Time, size int64) {
 func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions, logger *slog.Logger) error {
 	dst := filepath.Join(codexHome, "sessions")
 	sharedSessions := filepath.Join(sharedHome, "sessions")
+	resumeSessions := sharedSessions
+	if opts.ResumeSessionsSource != "" && len(findCodexRollouts(opts.ResumeSessionsSource, opts.ResumeSessionID)) > 0 {
+		resumeSessions = opts.ResumeSessionsSource
+	}
 	storeDir := codexSessionStoreDir(sharedHome, opts.SessionStoreKey)
 
 	// local_directory tasks have no reusable envRoot, so their history can only
@@ -581,7 +589,7 @@ func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions
 			// empty local dir rather than re-exposing the whole shared history.
 			return os.MkdirAll(dst, 0o755)
 		}
-		return linkCodexSessionsToStore(dst, storeDir, sharedSessions, opts.ResumeSessionID, logger)
+		return linkCodexSessionsToStore(dst, storeDir, resumeSessions, opts.ResumeSessionID, logger)
 	}
 
 	fi, err := os.Lstat(dst)
@@ -603,7 +611,7 @@ func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions
 	// the store link and the resume rollout, then leave it.
 	if storeDir != "" {
 		if target, rlErr := os.Readlink(dst); rlErr == nil && sameCodexPath(target, storeDir) {
-			return linkCodexSessionsToStore(dst, storeDir, sharedSessions, opts.ResumeSessionID, logger)
+			return linkCodexSessionsToStore(dst, storeDir, resumeSessions, opts.ResumeSessionID, logger)
 		}
 	}
 
@@ -622,7 +630,7 @@ func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions
 	if opts.ResumeSessionID != "" && storeDir != "" {
 		logger.Info("execenv: migrated codex-home sessions from shared symlink to per-issue store",
 			"codex_home", codexHome, "resume_session", true)
-		return linkCodexSessionsToStore(dst, storeDir, sharedSessions, opts.ResumeSessionID, logger)
+		return linkCodexSessionsToStore(dst, storeDir, resumeSessions, opts.ResumeSessionID, logger)
 	}
 	logger.Info("execenv: migrated codex-home sessions from shared symlink to task-local dir",
 		"codex_home", codexHome, "resume_session", false)

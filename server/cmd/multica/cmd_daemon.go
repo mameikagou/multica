@@ -98,6 +98,7 @@ func init() {
 	f.String("device-name", "", "Human-readable device name (env: MULTICA_DAEMON_DEVICE_NAME)")
 	f.String("runtime-name", "", "Runtime display name (env: MULTICA_AGENT_RUNTIME_NAME)")
 	f.String("workspaces-root", "", "Base directory for task workspaces (env: MULTICA_WORKSPACES_ROOT)")
+	f.String("codex-native-workdir", "", "Stable Codex cwd without Multica sidecar injection (env: MULTICA_CODEX_NATIVE_WORKDIR)")
 	f.Duration("poll-interval", 0, "Task poll interval (env: MULTICA_DAEMON_POLL_INTERVAL)")
 	f.Duration("heartbeat-interval", 0, "Heartbeat interval (env: MULTICA_DAEMON_HEARTBEAT_INTERVAL)")
 	f.Duration("agent-timeout", 0, "Absolute per-task wall-clock cap; 0 = no cap, rely on the watchdogs (env: MULTICA_AGENT_TIMEOUT)")
@@ -122,6 +123,7 @@ func init() {
 	rf.String("device-name", "", "Human-readable device name (env: MULTICA_DAEMON_DEVICE_NAME)")
 	rf.String("runtime-name", "", "Runtime display name (env: MULTICA_AGENT_RUNTIME_NAME)")
 	rf.String("workspaces-root", "", "Base directory for task workspaces (env: MULTICA_WORKSPACES_ROOT)")
+	rf.String("codex-native-workdir", "", "Stable Codex cwd without Multica sidecar injection (env: MULTICA_CODEX_NATIVE_WORKDIR)")
 	rf.Duration("poll-interval", 0, "Task poll interval (env: MULTICA_DAEMON_POLL_INTERVAL)")
 	rf.Duration("heartbeat-interval", 0, "Heartbeat interval (env: MULTICA_DAEMON_HEARTBEAT_INTERVAL)")
 	rf.Duration("agent-timeout", 0, "Absolute per-task wall-clock cap; 0 = no cap, rely on the watchdogs (env: MULTICA_AGENT_TIMEOUT)")
@@ -870,6 +872,9 @@ func buildDaemonStartArgs(cmd *cobra.Command) []string {
 	if v := flagString(cmd, "workspaces-root"); v != "" {
 		args = append(args, "--workspaces-root", v)
 	}
+	if v := flagString(cmd, "codex-native-workdir"); v != "" {
+		args = append(args, "--codex-native-workdir", v)
+	}
 	if d, _ := cmd.Flags().GetDuration("poll-interval"); d > 0 {
 		args = append(args, "--poll-interval", d.String())
 	}
@@ -980,15 +985,21 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	codexNativeWorkDir := resolveDaemonStringOverride(
+		flagString(cmd, "codex-native-workdir"),
+		"MULTICA_CODEX_NATIVE_WORKDIR",
+		fileCfg.CodexNativeWorkDir,
+	)
 
 	overrides := daemon.Overrides{
-		ServerURL:      serverURL,
-		DaemonID:       flagString(cmd, "daemon-id"),
-		DeviceName:     deviceNameFlag,
-		RuntimeName:    runtimeNameFlag,
-		WorkspacesRoot: workspacesRoot,
-		Profile:        profile,
-		HealthPort:     healthPortForProfile(profile),
+		ServerURL:          serverURL,
+		DaemonID:           flagString(cmd, "daemon-id"),
+		DeviceName:         deviceNameFlag,
+		RuntimeName:        runtimeNameFlag,
+		WorkspacesRoot:     workspacesRoot,
+		CodexNativeWorkDir: codexNativeWorkDir,
+		Profile:            profile,
+		HealthPort:         healthPortForProfile(profile),
 	}
 	pollFlag, _ := cmd.Flags().GetDuration("poll-interval")
 	pollOverride, err := resolveDaemonDurationOverride(pollFlag, "MULTICA_DAEMON_POLL_INTERVAL", fileCfg.PollInterval)

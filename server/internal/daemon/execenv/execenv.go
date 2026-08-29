@@ -81,6 +81,17 @@ type PrepareParams struct {
 	// substituted. Used by the local_directory project_resource flow
 	// (MUL-2663). When set, the envRoot/workdir directory is not created.
 	LocalWorkDir string
+	// NativeWorkDir is a stable, user-owned cwd used without adopting the
+	// local_directory lifecycle. The daemon must not write context files,
+	// markers, skills, or cleanup metadata into it. Task-private state remains
+	// under envRoot. Currently supported only for Codex.
+	NativeWorkDir string
+	// CodexResumeSessionID and CodexResumeSessionsSource migrate exactly one
+	// prior managed Codex rollout into the native cwd conversation store. The
+	// source is read-only and must already have passed the daemon's managed-env
+	// ownership checks. They are ignored outside native Codex mode.
+	CodexResumeSessionID      string
+	CodexResumeSessionsSource string
 	// LocalWorktree, when non-nil, is the worktree-mode counterpart of
 	// LocalWorkDir: instead of running in the user's directory, the task gets
 	// its own git worktree of that repo inside envRoot and delivers its work
@@ -283,6 +294,10 @@ type Environment struct {
 	// scratch that the GC should reclaim on the normal schedule, and the
 	// sidecar rollback that protects a user's directory is unnecessary.
 	LocalDirectory bool
+	// NativeWorkDir is true when WorkDir is a stable provider cwd that Multica
+	// must treat as read-only infrastructure: the agent may edit user files,
+	// but Prepare/Cleanup never injects or removes daemon sidecars there.
+	NativeWorkDir bool
 	// MulticaConfigRoot is the private per-task config directory exported to
 	// child CLI invocations. It prevents implicit discovery of the daemon
 	// owner's ~/.multica profile without changing the provider-facing HOME.
@@ -420,6 +435,21 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	if params.TaskID == "" {
 		return nil, fmt.Errorf("execenv: task ID is required")
 	}
+	if params.NativeWorkDir != "" {
+		if params.Provider != "codex" {
+			return nil, fmt.Errorf("execenv: native workdir is supported only for codex")
+		}
+		if params.LocalWorkDir != "" || params.LocalWorktree != nil {
+			return nil, fmt.Errorf("execenv: native workdir cannot be combined with local_directory")
+		}
+		info, err := os.Stat(params.NativeWorkDir)
+		if err != nil {
+			return nil, fmt.Errorf("execenv: stat native workdir: %w", err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("execenv: native workdir is not a directory: %s", params.NativeWorkDir)
+		}
+	}
 
 	envRoot, err := ResolveRootDir(RootDirParams{
 		WorkspacesRoot:  params.WorkspacesRoot,
@@ -495,10 +525,12 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// envRoot.
 	workDir := filepath.Join(envRoot, "workdir")
 	scratchDirs := []string{filepath.Join(envRoot, "output"), filepath.Join(envRoot, "logs")}
-	if params.LocalWorkDir == "" && params.LocalWorktree == nil {
+	if params.LocalWorkDir == "" && params.LocalWorktree == nil && params.NativeWorkDir == "" {
 		scratchDirs = append(scratchDirs, workDir)
 	} else if params.LocalWorkDir != "" {
 		workDir = params.LocalWorkDir
+	} else if params.NativeWorkDir != "" {
+		workDir = params.NativeWorkDir
 	}
 	for _, dir := range scratchDirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -555,6 +587,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		RootDir:           envRoot,
 		WorkDir:           workDir,
 		LocalDirectory:    params.LocalWorkDir != "",
+		NativeWorkDir:     params.NativeWorkDir != "",
 		LocalWorktree:     localWorktree,
 		MulticaConfigRoot: multicaConfigRoot,
 		logger:            logger,
@@ -600,11 +633,13 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		}()
 	}
 
-	if err := writeContextFiles(workDir, params.Provider, params.Task, manifest); err != nil {
-		return nil, fmt.Errorf("execenv: write context files: %w", err)
-	}
-	if err := prepareOmpMcpConfig(workDir, params.Provider, params.McpConfig, manifest); err != nil {
-		return nil, fmt.Errorf("execenv: prepare omp mcp config: %w", err)
+	if params.NativeWorkDir == "" {
+		if err := writeContextFiles(workDir, params.Provider, params.Task, manifest); err != nil {
+			return nil, fmt.Errorf("execenv: write context files: %w", err)
+		}
+		if err := prepareOmpMcpConfig(workDir, params.Provider, params.McpConfig, manifest); err != nil {
+			return nil, fmt.Errorf("execenv: prepare omp mcp config: %w", err)
+		}
 	}
 
 	// Persist managed-env provenance for non-local resumable envs at Prepare time
@@ -630,7 +665,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// For Codex, set up a per-task CODEX_HOME seeded from ~/.codex/ with skills.
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(envRoot, codexHomeDirName)
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, ResumeSessionID: params.CodexResumeSessionID, ResumeSessionsSource: params.CodexResumeSessionsSource, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil || params.NativeWorkDir != "", SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare codex-home: %w", err)
 		}
 		if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
@@ -1208,9 +1243,9 @@ func ReadManagedEnvProvenance(envRoot string) (*ManagedEnvProvenance, error) {
 // If removeAll is true, the entire env root is deleted. Otherwise, workdir is
 // removed but output/ and logs/ are preserved for debugging.
 //
-// For local_directory tasks (env.LocalDirectory==true) WorkDir is the
-// user's own path — Cleanup MUST NEVER delete it, regardless of removeAll.
-// In that mode we only ever delete the envRoot scratch directory.
+// For local_directory and native-cwd tasks WorkDir is the user's own path —
+// Cleanup MUST NEVER delete it, regardless of removeAll. In those modes we
+// only ever delete the envRoot scratch directory.
 func (env *Environment) Cleanup(removeAll bool) error {
 	if env == nil {
 		return nil
@@ -1221,7 +1256,7 @@ func (env *Environment) Cleanup(removeAll bool) error {
 	// both paths are idempotent.
 	env.ReleaseLock()
 
-	if env.LocalDirectory {
+	if env.LocalDirectory || env.NativeWorkDir {
 		// Never touch the user's directory. RootDir is the daemon's own
 		// scratch; safe to remove when the caller asked for a full
 		// teardown.

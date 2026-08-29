@@ -112,6 +112,43 @@ func TestDefaultGCIntervalIsTwoHours(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_CodexNativeWorkDirPrecedenceAndValidation(t *testing.T) {
+	stageFakeAgent(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SHELL", filepath.Join(t.TempDir(), "missing-shell"))
+
+	envDir := t.TempDir()
+	overrideDir := t.TempDir()
+	t.Setenv("MULTICA_CODEX_NATIVE_WORKDIR", envDir)
+	base := Overrides{ServerURL: "http://localhost:0", WorkspacesRoot: t.TempDir()}
+
+	cfg, err := LoadConfig(base)
+	if err != nil {
+		t.Fatalf("LoadConfig from env: %v", err)
+	}
+	if cfg.CodexNativeWorkDir != envDir {
+		t.Fatalf("CodexNativeWorkDir = %q, want env path %q", cfg.CodexNativeWorkDir, envDir)
+	}
+
+	base.CodexNativeWorkDir = overrideDir
+	cfg, err = LoadConfig(base)
+	if err != nil {
+		t.Fatalf("LoadConfig from override: %v", err)
+	}
+	if cfg.CodexNativeWorkDir != overrideDir {
+		t.Fatalf("CodexNativeWorkDir = %q, want override path %q", cfg.CodexNativeWorkDir, overrideDir)
+	}
+
+	notDir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base.CodexNativeWorkDir = notDir
+	if _, err := LoadConfig(base); err == nil || !strings.Contains(err.Error(), "codex native workdir") {
+		t.Fatalf("invalid native workdir error = %v", err)
+	}
+}
+
 // A localhost server URL is not the official cloud host, so this exercises the
 // self-host branch of defaultGCCompletedTaskTTL: retention stays unbounded until
 // an operator opts in, and a daemon upgrade never starts deleting on its own.
