@@ -3553,6 +3553,95 @@ func TestCodexExecuteSurfacesUnsupportedServerRequestOnInterruptedTurn(t *testin
 	}
 }
 
+func TestCodexExecuteCancellationInterruptsTurnAndPreservesUsage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	tempDir := t.TempDir()
+	startedPath := filepath.Join(tempDir, "turn-started")
+	interruptPath := filepath.Join(tempDir, "interrupt-request")
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-cancel-usage"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-cancel-usage","turn":{"id":"turn-cancel-usage"}}}'`+"\n"+
+		`echo started > `+startedPath+"\n"+
+		`read line`+"\n"+
+		`printf '%s\n' "$line" > `+interruptPath+"\n"+
+		`echo '{"jsonrpc":"2.0","id":4,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-cancel-usage","turn":{"id":"turn-cancel-usage","status":"interrupted","usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":10}}}}'`+"\n")
+
+	backend, err := New("codex", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new codex backend: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt", ExecOptions{
+		Model:                     "gpt-test",
+		SemanticInactivityTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(startedPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for fake Codex turn to start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		if result.Status != "aborted" {
+			t.Fatalf("status = %q, want aborted (error=%q)", result.Status, result.Error)
+		}
+		usage, ok := result.Usage["gpt-test"]
+		if !ok {
+			t.Fatalf("cancelled turn usage missing: %+v", result.Usage)
+		}
+		if usage.InputTokens != 70 || usage.CacheReadTokens != 30 || usage.OutputTokens != 10 {
+			t.Fatalf("cancelled turn usage = %+v, want input=70 cache_read=30 output=10", usage)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for cancelled Codex result")
+	}
+
+	rawInterrupt, err := os.ReadFile(interruptPath)
+	if err != nil {
+		t.Fatalf("read interrupt request: %v", err)
+	}
+	var interruptRequest map[string]any
+	if err := json.Unmarshal(rawInterrupt, &interruptRequest); err != nil {
+		t.Fatalf("parse interrupt request: %v: %q", err, rawInterrupt)
+	}
+	if interruptRequest["method"] != "turn/interrupt" {
+		t.Fatalf("method = %v, want turn/interrupt", interruptRequest["method"])
+	}
+	params, _ := interruptRequest["params"].(map[string]any)
+	if params["threadId"] != "thr-cancel-usage" || params["turnId"] != "turn-cancel-usage" {
+		t.Fatalf("interrupt params = %+v", params)
+	}
+}
+
 func TestCodexExecuteTimeoutWinsOverProcessExitDuringActiveTurn(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
