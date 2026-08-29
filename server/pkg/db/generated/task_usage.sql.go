@@ -418,7 +418,7 @@ SELECT
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
     SUM(task_count)::int             AS task_count
-FROM task_usage_hourly
+FROM task_usage_hourly_live
 WHERE workspace_id = $1
   AND bucket_hour >= $2::timestamptz
   AND ($3::uuid IS NULL OR project_id = $3)
@@ -511,7 +511,7 @@ SELECT
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
     SUM(task_count)::int             AS task_count
-FROM task_usage_hourly
+FROM task_usage_hourly_live
 WHERE workspace_id = $1
   AND bucket_hour >= $3::timestamptz
   AND ($4::uuid IS NULL OR project_id = $4)

@@ -151,7 +151,7 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens
-FROM task_usage_hourly
+FROM task_usage_hourly_live
 WHERE runtime_id = $1
   AND bucket_hour >= $3::timestamptz
 GROUP BY DATE(bucket_hour AT TIME ZONE $2::text), LOWER(provider), model

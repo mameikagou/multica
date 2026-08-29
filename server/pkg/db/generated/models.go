@@ -1376,6 +1376,28 @@ type TaskUsageHourlyDirty struct {
 	EnqueuedAt  pgtype.Timestamptz `json:"enqueued_at"`
 }
 
+// Hourly usage with a raw live tail for the rollup safety-lag window. Use for reports; keep task_usage_hourly as the materialized storage table.
+type TaskUsageHourlyLive struct {
+	BucketHour               pgtype.Timestamptz `json:"bucket_hour"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	RuntimeID                pgtype.UUID        `json:"runtime_id"`
+	AgentID                  pgtype.UUID        `json:"agent_id"`
+	ProjectID                pgtype.UUID        `json:"project_id"`
+	Provider                 string             `json:"provider"`
+	Model                    string             `json:"model"`
+	InputTokens              int64              `json:"input_tokens"`
+	OutputTokens             int64              `json:"output_tokens"`
+	CacheReadTokens          int64              `json:"cache_read_tokens"`
+	CacheWriteTokens         int64              `json:"cache_write_tokens"`
+	CostUsdTicks             int64              `json:"cost_usd_ticks"`
+	UncostedInputTokens      int64              `json:"uncosted_input_tokens"`
+	UncostedOutputTokens     int64              `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens  int64              `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens int64              `json:"uncosted_cache_write_tokens"`
+	TaskCount                int64              `json:"task_count"`
+	EventCount               int64              `json:"event_count"`
+}
+
 type TaskUsageHourlyRollupState struct {
 	ID                int16              `json:"id"`
 	WatermarkAt       pgtype.Timestamptz `json:"watermark_at"`
