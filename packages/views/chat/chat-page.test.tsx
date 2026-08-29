@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import type { Agent } from "@multica/core/types";
+import type { Agent, ChatSession } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
 import enChat from "../locales/en/chat.json";
@@ -98,7 +98,10 @@ const storeRef = vi.hoisted(() => ({
 const storeListeners = vi.hoisted(() => new Set<() => void>());
 const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
+const sessionsRef = vi.hoisted(() => ({ current: [] as ChatSession[] }));
+const sessionsLoadedRef = vi.hoisted(() => ({ current: true }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
+const mockHandleSelectSession = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 const mockSetActiveSession = vi.hoisted(() =>
   vi.fn((id: string | null) => {
@@ -132,7 +135,8 @@ vi.mock("./components/use-chat-controller", async () => {
       agents: availableAgentsRef.current,
       availableAgents: availableAgentsRef.current,
       agentsSettled: agentsSettledRef.current,
-      sessions: [],
+      sessions: sessionsRef.current,
+      sessionsLoaded: sessionsLoadedRef.current,
       activeSessionId: useSyncExternalStore(
         subscribeToStore,
         () => storeRef.current,
@@ -162,7 +166,7 @@ vi.mock("./components/use-chat-controller", async () => {
       handleUploadFile: vi.fn(),
       handleNewChat: vi.fn(),
       handleStartNewChat: mockStartNewChat,
-      handleSelectSession: vi.fn(),
+      handleSelectSession: mockHandleSelectSession,
       advanceSelectionAfterArchive: vi.fn(),
       archiveSession: vi.fn(),
       setActiveSession: mockSetActiveSession,
@@ -199,6 +203,25 @@ const agent: Agent = {
 };
 
 const NO_ACCESS_MSG = "You don't have access to chat with this agent.";
+
+function session(
+  id: string,
+  updatedAt: string,
+  options: { status?: "active" | "archived"; pinned?: boolean } = {},
+): ChatSession {
+  return {
+    id,
+    workspace_id: "ws-1",
+    agent_id: "agent-1",
+    creator_id: "user-1",
+    title: id,
+    status: options.status ?? "active",
+    has_unread: false,
+    pinned: options.pinned,
+    created_at: updatedAt,
+    updated_at: updatedAt,
+  };
+}
 
 function renderPage(search: string, { strict = false } = {}) {
   const replace = vi.fn();
@@ -238,7 +261,56 @@ beforeEach(() => {
   storeListeners.clear();
   availableAgentsRef.current = [agent];
   agentsSettledRef.current = true;
+  sessionsRef.current = [];
+  sessionsLoadedRef.current = true;
   layout.width = DESKTOP;
+});
+
+describe("ChatPage default session", () => {
+  it("opens the first active history row when entering bare Chat", () => {
+    const recent = session("recent", "2026-08-29T12:00:00Z");
+    const pinned = session("pinned", "2026-08-28T12:00:00Z", { pinned: true });
+    sessionsRef.current = [
+      session("archived", "2026-08-30T12:00:00Z", { status: "archived" }),
+      recent,
+      pinned,
+    ];
+
+    renderPage("");
+
+    // The same pinned-first ordering as ChatThreadList defines its first row.
+    expect(mockHandleSelectSession).toHaveBeenCalledOnce();
+    expect(mockHandleSelectSession).toHaveBeenCalledWith(pinned);
+  });
+
+  it("waits for sessions to load before choosing the default", () => {
+    sessionsLoadedRef.current = false;
+    sessionsRef.current = [];
+    const { rerender } = renderPage("");
+    expect(mockHandleSelectSession).not.toHaveBeenCalled();
+
+    const recent = session("recent", "2026-08-29T12:00:00Z");
+    sessionsLoadedRef.current = true;
+    sessionsRef.current = [recent];
+    rerender();
+
+    expect(mockHandleSelectSession).toHaveBeenCalledWith(recent);
+  });
+
+  it("does not replace an explicit session deep link", () => {
+    sessionsRef.current = [session("recent", "2026-08-29T12:00:00Z")];
+
+    renderPage("session=explicit");
+    expect(mockHandleSelectSession).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a new-agent deep link", () => {
+    sessionsRef.current = [session("recent", "2026-08-29T12:00:00Z")];
+
+    renderPage("agent=agent-1");
+    expect(mockHandleSelectSession).not.toHaveBeenCalled();
+    expect(mockStartNewChat).toHaveBeenCalledWith(agent);
+  });
 });
 
 describe("ChatPage ?agent= deep link", () => {
