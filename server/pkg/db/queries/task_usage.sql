@@ -97,7 +97,7 @@ SELECT
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
     SUM(task_count)::int             AS task_count
-FROM task_usage_hourly
+FROM task_usage_hourly_live
 WHERE workspace_id = $1
   AND bucket_hour >= sqlc.arg('since')::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
@@ -133,7 +133,7 @@ SELECT
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
     SUM(task_count)::int             AS task_count
-FROM task_usage_hourly
+FROM task_usage_hourly_live
 WHERE workspace_id = $1
   AND bucket_hour >= @since::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))

@@ -703,6 +703,98 @@ func TestRollupTaskUsageHourlyIdempotentAndWatermark(t *testing.T) {
 	}
 }
 
+// TestUsageReportsReadTheLiveTail proves a just-finished task is visible
+// before the five-minute-safe rollup watermark reaches it. A stale materialized
+// row is seeded in the same current-hour bucket as well: the live view must
+// replace that whole bucket from raw task_usage, not add both copies together.
+func TestUsageReportsReadTheLiveTail(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	var runtimeID, agentID string
+	dbfx.QueryRow(t, `SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&runtimeID)
+	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)
+
+	const model = "live-tail-regression-model"
+	taskID := dbfx.Insert(t, "agent_task_queue", testutil.Cols{
+		"agent_id":     agentID,
+		"runtime_id":   runtimeID,
+		"status":       "completed",
+		"created_at":   testutil.Raw("now()"),
+		"started_at":   testutil.Raw("now() - interval '1 minute'"),
+		"completed_at": testutil.Raw("now()"),
+	})
+	dbfx.Insert(t, "task_usage", testutil.Cols{
+		"task_id":       taskID,
+		"provider":      "codex",
+		"model":         model,
+		"input_tokens":  4242,
+		"output_tokens": 58,
+		"created_at":    testutil.Raw("now()"),
+		"updated_at":    testutil.Raw("now()"),
+	})
+	dbfx.InsertNoID(t, "task_usage_hourly", testutil.Cols{
+		"bucket_hour":   testutil.Raw("task_usage_hour_bucket(now())"),
+		"workspace_id":  testWorkspaceID,
+		"runtime_id":    runtimeID,
+		"agent_id":      agentID,
+		"project_id":    nil,
+		"provider":      "codex",
+		"model":         model,
+		"input_tokens":  999,
+		"output_tokens": 1,
+		"task_count":    1,
+		"event_count":   1,
+	}, "workspace_id = $1 AND runtime_id = $2 AND agent_id = $3 AND provider = $4 AND model = $5",
+		testWorkspaceID, runtimeID, agentID, "codex", model)
+
+	daily := testutil.Call(t, testHandler.GetDashboardUsageDaily,
+		newRequest("GET", "/api/dashboard/usage/daily?days=1&tz=UTC", nil)).Want(http.StatusOK)
+	var dailyRows []DashboardUsageDailyResponse
+	daily.JSON(&dailyRows)
+	var dailyInput int64
+	for _, row := range dailyRows {
+		if row.Model == model {
+			dailyInput += row.InputTokens
+		}
+	}
+	if dailyInput != 4242 {
+		t.Fatalf("dashboard daily live-tail input = %d, want 4242", dailyInput)
+	}
+
+	byAgent := testutil.Call(t, testHandler.GetDashboardUsageByAgent,
+		newRequest("GET", "/api/dashboard/usage/by-agent?days=1&tz=UTC", nil)).Want(http.StatusOK)
+	var agentRows []DashboardUsageByAgentResponse
+	byAgent.JSON(&agentRows)
+	var agentInput int64
+	for _, row := range agentRows {
+		if row.Model == model {
+			agentInput += row.InputTokens
+		}
+	}
+	if agentInput != 4242 {
+		t.Fatalf("dashboard by-agent live-tail input = %d, want 4242", agentInput)
+	}
+
+	runtimeReq := withURLParam(
+		newRequest("GET", "/api/runtimes/"+runtimeID+"/usage?days=1&tz=UTC", nil),
+		"runtimeId", runtimeID,
+	)
+	runtimeUsage := testutil.Call(t, testHandler.GetRuntimeUsage, runtimeReq).Want(http.StatusOK)
+	var runtimeRows []RuntimeUsageResponse
+	runtimeUsage.JSON(&runtimeRows)
+	var runtimeInput int64
+	for _, row := range runtimeRows {
+		if row.Model == model {
+			runtimeInput += row.InputTokens
+		}
+	}
+	if runtimeInput != 4242 {
+		t.Fatalf("runtime live-tail input = %d, want 4242", runtimeInput)
+	}
+}
+
 // TestRollupTaskUsageHourlyReassignBetweenRuntimes ports the invalidation
 // coverage the deleted runtime_rollup_test.go held for the legacy daily
 // rollup. Reassigning a task between runtimes (the runtime-merge path) must
