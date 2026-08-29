@@ -1954,7 +1954,7 @@ func TestExecuteAndDrain_PinsWhenRolloutAppearsAfterStatus(t *testing.T) {
 	t.Fatalf("expected the codex session to be pinned once its rollout appeared mid-run, got %+v", rec.snapshot())
 }
 
-func TestGateResumeToReusedWorkdir(t *testing.T) {
+func TestGateResumeToReachableSession(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -2019,7 +2019,7 @@ func TestGateResumeToReusedWorkdir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// gateResumeToReusedWorkdir compares directory IDENTITY, not path
+			// gateResumeToReachableSession compares directory IDENTITY, not path
 			// spelling, so the table's paths have to exist on disk. Mapping
 			// them under one temp root preserves each case's same/different
 			// relationship while making them real.
@@ -2039,7 +2039,7 @@ func TestGateResumeToReusedWorkdir(t *testing.T) {
 			task := Task{PriorSessionID: tt.sessionID, PriorWorkDir: priorDir}
 			taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: tt.sessionID != ""}
 
-			reused := gateResumeToReusedWorkdir(&task, &taskCtx, envDir, !tt.sessionHomeUnreachable, slog.Default())
+			reused := gateResumeToReachableSession(&task, &taskCtx, "claude", envDir, !tt.sessionHomeUnreachable, slog.Default())
 
 			if reused != tt.wantReused {
 				t.Fatalf("reused = %v, want %v", reused, tt.wantReused)
@@ -2057,6 +2057,76 @@ func TestGateResumeToReusedWorkdir(t *testing.T) {
 				t.Fatalf("PriorSessionResumeUnavailable = %v, want %v", taskCtx.PriorSessionResumeUnavailable, wantUnavailable)
 			}
 		})
+	}
+}
+
+func TestGatePiResumeToSessionFile(t *testing.T) {
+	t.Parallel()
+
+	for _, provider := range []string{"pi", "omp"} {
+		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
+
+			base := t.TempDir()
+			priorDir := filepath.Join(base, "prior-workdir")
+			envDir := filepath.Join(base, "fresh-workdir")
+			for _, dir := range []string{priorDir, envDir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("create %s: %v", dir, err)
+				}
+			}
+
+			sessionFile := filepath.Join(base, "pi-session.jsonl")
+			if err := os.WriteFile(sessionFile, []byte("{}\n"), 0o644); err != nil {
+				t.Fatalf("create session file: %v", err)
+			}
+
+			task := Task{PriorSessionID: sessionFile, PriorWorkDir: priorDir}
+			taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: true}
+
+			reachable := gateResumeToReachableSession(&task, &taskCtx, provider, envDir, true, slog.Default())
+
+			if !reachable {
+				t.Fatal("Pi-family session file should remain reachable across workdirs")
+			}
+			if task.PriorSessionID != sessionFile {
+				t.Fatalf("PriorSessionID = %q, want %q", task.PriorSessionID, sessionFile)
+			}
+			if !taskCtx.PriorSessionResumed {
+				t.Fatal("PriorSessionResumed was cleared for a reachable Pi-family session")
+			}
+			if taskCtx.PriorSessionResumeUnavailable {
+				t.Fatal("reachable Pi-family session was reported unavailable")
+			}
+		})
+	}
+}
+
+func TestGatePiResumeDropsMissingSessionFile(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	workDir := filepath.Join(base, "workdir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("create workdir: %v", err)
+	}
+	missingSession := filepath.Join(base, "missing.jsonl")
+	task := Task{PriorSessionID: missingSession, PriorWorkDir: workDir}
+	taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: true}
+
+	reachable := gateResumeToReachableSession(&task, &taskCtx, "pi", workDir, true, slog.Default())
+
+	if reachable {
+		t.Fatal("missing Pi session file was treated as reachable")
+	}
+	if task.PriorSessionID != "" {
+		t.Fatalf("PriorSessionID = %q, want empty", task.PriorSessionID)
+	}
+	if taskCtx.PriorSessionResumed {
+		t.Fatal("PriorSessionResumed stayed true for a missing Pi session")
+	}
+	if !taskCtx.PriorSessionResumeUnavailable {
+		t.Fatal("missing Pi session was not reported unavailable")
 	}
 }
 

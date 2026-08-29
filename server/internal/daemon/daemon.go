@@ -5721,16 +5721,22 @@ func providerNeedsInlineSystemPrompt(provider string) bool {
 	}
 }
 
-// gateResumeToReusedWorkdir clears the task's prior session unless this run
+// gateResumeToReachableSession clears the task's prior session unless this run
 // can actually reach the store the session lives in, and reports whether that
-// held. CLI backends key their session stores to the cwd (Claude Code looks
-// sessions up under ~/.claude/projects/<encoded-cwd>/), so a session id from a
-// different workdir can never resolve: the CLI exits within a second and the
-// run fails before doing any work — permanently, because the failed run
-// records no session and the next claim serves the same stale pointer again.
-// This fires whenever the prior workdir no longer exists (GC'd after the issue
-// went done, daemon reinstall, manual cleanup) and execenv.Reuse fell back to a
-// fresh Prepare (GitHub #3854).
+// held. Most CLI backends key their session stores to the cwd (Claude Code
+// looks sessions up under ~/.claude/projects/<encoded-cwd>/), so a session id
+// from a different workdir can never resolve: the CLI exits within a second
+// and the run fails before doing any work — permanently, because the failed
+// run records no session and the next claim serves the same stale pointer
+// again. This fires whenever the prior workdir no longer exists (GC'd after
+// the issue went done, daemon reinstall, manual cleanup) and execenv.Reuse fell
+// back to a fresh Prepare (GitHub #3854).
+//
+// Pi and OMP are the exception. Their opaque session id is an absolute JSONL
+// path under ~/.multica/pi-sessions, and the backend passes that path directly
+// to --session. The transcript remains resumable when only the task workdir
+// changes, so binding it to workdir reuse discards healthy conversation history
+// and forces the model to reconstruct it through `multica chat history`.
 //
 // A matching workdir is not sufficient on its own. Hermes keys its sessions to
 // HERMES_HOME — the per-task overlay under envRoot — not to the cwd, and the
@@ -5745,8 +5751,8 @@ func providerNeedsInlineSystemPrompt(provider string) bool {
 // HermesSessionStore) — and false drops the resume with the same disclosure as
 // a workdir mismatch.
 // sameExistingDir reports whether two paths name the same existing directory.
-// False when either cannot be stat'd, which is the safe answer here: an absent
-// prior workdir means there is nothing to resume from.
+// False when either cannot be stat'd, which is the safe answer for cwd-keyed
+// providers: an absent prior workdir means there is nothing to resume from.
 func sameExistingDir(a, b string) bool {
 	if a == "" || b == "" {
 		return false
@@ -5762,15 +5768,19 @@ func sameExistingDir(a, b string) bool {
 	return os.SameFile(ai, bi)
 }
 
-func gateResumeToReusedWorkdir(task *Task, taskCtx *execenv.TaskContextForEnv, envWorkDir string, sessionHomeReachable bool, taskLog *slog.Logger) bool {
+func gateResumeToReachableSession(task *Task, taskCtx *execenv.TaskContextForEnv, provider, envWorkDir string, sessionHomeReachable bool, taskLog *slog.Logger) bool {
 	// Compare the directories, not the spelling. Reuse runs in the canonical
 	// path it validated and locked, which need not be character-identical to
 	// the PriorWorkDir the server sent — a symlinked workspaces root is enough
 	// to make them differ. A string compare would then silently drop the prior
 	// session on every follow-up task in that installation.
-	reused := task.PriorWorkDir != "" && sameExistingDir(envWorkDir, task.PriorWorkDir) && sessionHomeReachable
-	if !reused && task.PriorSessionID != "" {
+	reachable := task.PriorWorkDir != "" && sameExistingDir(envWorkDir, task.PriorWorkDir) && sessionHomeReachable
+	if provider == "pi" || provider == "omp" {
+		reachable = piSessionFilePresent(task.PriorSessionID)
+	}
+	if !reachable && task.PriorSessionID != "" {
 		taskLog.Info("dropping prior session: session store not reachable from this run",
+			"provider", provider,
 			"session_id", task.PriorSessionID,
 			"prior_workdir", task.PriorWorkDir,
 			"workdir", envWorkDir,
@@ -5785,7 +5795,15 @@ func gateResumeToReusedWorkdir(task *Task, taskCtx *execenv.TaskContextForEnv, e
 		taskCtx.PriorSessionResumeUnavailable = true
 		task.PriorSessionResumeUnavailable = true
 	}
-	return reused
+	return reachable
+}
+
+func piSessionFilePresent(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	info, err := os.Stat(sessionID)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // sessionHomeReachable reports whether a session recorded by a prior task on
@@ -5807,9 +5825,8 @@ func gateResumeToReusedWorkdir(task *Task, taskCtx *execenv.TaskContextForEnv, e
 //   - With no store, the transcript is the overlay's own task-local file, which
 //     survives exactly when this run reused the prior task's env root.
 //
-// Every other provider is keyed by cwd (or resolves its own store), so the
-// workdir comparison in gateResumeToReusedWorkdir remains the whole answer and
-// this returns true.
+// Every other provider is keyed by cwd or handles its independently addressed
+// store in gateResumeToReachableSession, so this predicate returns true.
 func sessionHomeReachable(provider string, env *execenv.Environment, envReused bool) bool {
 	if provider != "hermes" {
 		return true
@@ -5904,7 +5921,7 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 
 // gateCodexResumeToRolloutPresence drops the prior Codex session when its
 // rollout is not actually present in the task's CODEX_HOME sessions. A reused
-// workdir keeps PriorSessionID (gateResumeToReusedWorkdir), but Codex session
+// workdir keeps PriorSessionID (gateResumeToReachableSession), but Codex session
 // isolation (MUL-4424) means the rollout may be missing: a migrated legacy home
 // that could not locate it, or a local_directory task whose shared history was
 // pruned. Codex would then silently thread/start from scratch, so we clear the
@@ -7327,13 +7344,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	cancelPrepare()
 	_ = d.client.ReportProgress(ctx, task.ID, fmt.Sprintf("Launching %s", provider), 1, 2)
 
-	reused := gateResumeToReusedWorkdir(&task, &taskCtx, env.WorkDir, sessionHomeReachable(provider, env, envReused), taskLog)
+	resumeReachable := gateResumeToReachableSession(&task, &taskCtx, provider, env.WorkDir, sessionHomeReachable(provider, env, envReused), taskLog)
 	// A reused workdir is necessary but not sufficient for a Codex resume: the
 	// prior thread's rollout must actually be present in this task's CODEX_HOME
 	// sessions (MUL-4424 isolates them). Drop the resume before the brief is
 	// generated below if it isn't, so we never tell the agent it is continuing a
 	// conversation Codex will silently restart from scratch.
-	if reused {
+	if resumeReachable {
 		gateCodexResumeToRolloutPresence(&task, &taskCtx, provider, env.CodexHome, taskLog)
 	}
 
@@ -7523,7 +7540,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"provider", provider,
 		"workdir", env.WorkDir,
 		"model", model,
-		"reused", reused,
+		"resume_reachable", resumeReachable,
 	)
 	if task.PriorSessionID != "" {
 		taskLog.Info("resuming session", "session_id", task.PriorSessionID)
