@@ -71,6 +71,10 @@ The daemon injects a task-scoped `mat_` credential for Multica API commands and
 a private task-local Multica configuration root. Inside that managed task
 context:
 
+- The `multica` command remains available in every platform-context mode.
+  Official binaries are exposed from their install directory; a locally
+  renamed daemon gets a task-private `multica` alias without requiring a
+  machine-wide symlink.
 - API commands such as `issue list`, `issue get`, and `issue runs` use the
   injected task identity and never fall back to the daemon Owner's saved Multica
   profile.
