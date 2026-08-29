@@ -7443,11 +7443,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	// Ensure the multica CLI is on PATH inside the agent's environment.
 	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
+	// inherit the daemon's PATH. A locally built daemon may also have a custom
+	// filename, so taskCLIPath creates a task-private `multica` alias when the
+	// running binary is not already using the canonical command name.
 	if selfBin, err := resolveSelfExecutable(); err == nil {
-		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+		taskPath, aliasErr := taskCLIPath(selfBin, taskTempDir, os.Getenv("PATH"))
+		if aliasErr != nil {
+			taskLog.Warn("could not create task-local multica CLI alias", "executable", selfBin, "error", aliasErr)
+		}
+		agentEnv["PATH"] = taskPath
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
