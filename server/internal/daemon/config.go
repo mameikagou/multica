@@ -104,7 +104,8 @@ type Config struct {
 	Profile                        string                // profile name (empty = default)
 	Agents                         map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
 	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
-	CodexNativeWorkDir             string                // optional stable Codex cwd; task-owned files remain under WorkspacesRoot
+	NativeWorkDir                  string                // optional stable cwd for every agent; task-owned files remain under WorkspacesRoot
+	CodexNativeWorkDir             string                // deprecated compatibility mirror of NativeWorkDir
 	KeepEnvAfterTask               bool                  // preserve env after task for debugging
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
@@ -159,6 +160,7 @@ type Config struct {
 type Overrides struct {
 	ServerURL          string
 	WorkspacesRoot     string
+	NativeWorkDir      string
 	CodexNativeWorkDir string
 	PollInterval       time.Duration
 	HeartbeatInterval  time.Duration
@@ -487,21 +489,28 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 
-	// Optional native Codex cwd: explicit override > env > disabled. Validate
-	// at daemon startup so a typo never waits until a task is claimed to fail.
-	codexNativeWorkDir := strings.TrimSpace(os.Getenv("MULTICA_CODEX_NATIVE_WORKDIR"))
-	if strings.TrimSpace(overrides.CodexNativeWorkDir) != "" {
-		codexNativeWorkDir = strings.TrimSpace(overrides.CodexNativeWorkDir)
+	// Optional native cwd: explicit overrides beat env, and the generic spelling
+	// wins within a tier. The Codex-only names remain as a compatibility alias
+	// for installations created before this became a provider-neutral gateway
+	// setting. Validate at daemon startup so a typo never waits until a task is
+	// claimed to fail.
+	nativeWorkDir := strings.TrimSpace(os.Getenv("MULTICA_NATIVE_WORKDIR"))
+	if strings.TrimSpace(overrides.NativeWorkDir) != "" {
+		nativeWorkDir = strings.TrimSpace(overrides.NativeWorkDir)
+	} else if strings.TrimSpace(overrides.CodexNativeWorkDir) != "" {
+		nativeWorkDir = strings.TrimSpace(overrides.CodexNativeWorkDir)
+	} else if nativeWorkDir == "" {
+		nativeWorkDir = strings.TrimSpace(os.Getenv("MULTICA_CODEX_NATIVE_WORKDIR"))
 	}
-	if codexNativeWorkDir != "" {
-		path, err := normalizeLocalPath(codexNativeWorkDir)
+	if nativeWorkDir != "" {
+		path, err := normalizeLocalPath(nativeWorkDir)
 		if err != nil {
-			return Config{}, fmt.Errorf("codex native workdir: %w", err)
+			return Config{}, fmt.Errorf("native workdir: %w", err)
 		}
 		if err := validateLocalPath(path); err != nil {
-			return Config{}, fmt.Errorf("codex native workdir: %w", err)
+			return Config{}, fmt.Errorf("native workdir: %w", err)
 		}
-		codexNativeWorkDir = path
+		nativeWorkDir = path
 	}
 
 	// Health port: override > default
@@ -622,7 +631,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Profile:                         profile,
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
-		CodexNativeWorkDir:              codexNativeWorkDir,
+		NativeWorkDir:                   nativeWorkDir,
+		CodexNativeWorkDir:              nativeWorkDir,
 		KeepEnvAfterTask:                keepEnv,
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,

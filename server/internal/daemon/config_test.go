@@ -112,39 +112,59 @@ func TestDefaultGCIntervalIsTwoHours(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_CodexNativeWorkDirPrecedenceAndValidation(t *testing.T) {
+func TestLoadConfig_NativeWorkDirPrecedenceCompatibilityAndValidation(t *testing.T) {
 	stageFakeAgent(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("SHELL", filepath.Join(t.TempDir(), "missing-shell"))
 
+	legacyEnvDir := t.TempDir()
 	envDir := t.TempDir()
 	overrideDir := t.TempDir()
-	t.Setenv("MULTICA_CODEX_NATIVE_WORKDIR", envDir)
+	t.Setenv("MULTICA_CODEX_NATIVE_WORKDIR", legacyEnvDir)
 	base := Overrides{ServerURL: "http://localhost:0", WorkspacesRoot: t.TempDir()}
 
 	cfg, err := LoadConfig(base)
 	if err != nil {
-		t.Fatalf("LoadConfig from env: %v", err)
+		t.Fatalf("LoadConfig from legacy env: %v", err)
 	}
-	if cfg.CodexNativeWorkDir != envDir {
-		t.Fatalf("CodexNativeWorkDir = %q, want env path %q", cfg.CodexNativeWorkDir, envDir)
+	if cfg.NativeWorkDir != legacyEnvDir || cfg.CodexNativeWorkDir != legacyEnvDir {
+		t.Fatalf("legacy native workdir = (%q, %q), want %q", cfg.NativeWorkDir, cfg.CodexNativeWorkDir, legacyEnvDir)
 	}
 
-	base.CodexNativeWorkDir = overrideDir
+	t.Setenv("MULTICA_NATIVE_WORKDIR", envDir)
 	cfg, err = LoadConfig(base)
 	if err != nil {
-		t.Fatalf("LoadConfig from override: %v", err)
+		t.Fatalf("LoadConfig from generic env: %v", err)
 	}
-	if cfg.CodexNativeWorkDir != overrideDir {
-		t.Fatalf("CodexNativeWorkDir = %q, want override path %q", cfg.CodexNativeWorkDir, overrideDir)
+	if cfg.NativeWorkDir != envDir {
+		t.Fatalf("NativeWorkDir = %q, want generic env path %q", cfg.NativeWorkDir, envDir)
+	}
+
+	legacyOverrideDir := t.TempDir()
+	base.CodexNativeWorkDir = legacyOverrideDir
+	cfg, err = LoadConfig(base)
+	if err != nil {
+		t.Fatalf("LoadConfig from legacy override: %v", err)
+	}
+	if cfg.NativeWorkDir != legacyOverrideDir {
+		t.Fatalf("NativeWorkDir = %q, want legacy override path %q", cfg.NativeWorkDir, legacyOverrideDir)
+	}
+
+	base.NativeWorkDir = overrideDir
+	cfg, err = LoadConfig(base)
+	if err != nil {
+		t.Fatalf("LoadConfig from generic override: %v", err)
+	}
+	if cfg.NativeWorkDir != overrideDir {
+		t.Fatalf("NativeWorkDir = %q, want override path %q", cfg.NativeWorkDir, overrideDir)
 	}
 
 	notDir := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(notDir, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	base.CodexNativeWorkDir = notDir
-	if _, err := LoadConfig(base); err == nil || !strings.Contains(err.Error(), "codex native workdir") {
+	base.NativeWorkDir = notDir
+	if _, err := LoadConfig(base); err == nil || !strings.Contains(err.Error(), "native workdir") {
 		t.Fatalf("invalid native workdir error = %v", err)
 	}
 }

@@ -202,11 +202,13 @@ func TestApplyConfigSetSupportsDaemonKeys(t *testing.T) {
 
 	cfg := cli.CLIConfig{}
 	workspacesRoot := filepath.Join(t.TempDir(), "multica")
+	nativeWorkDir := t.TempDir()
 	codexNativeWorkDir := t.TempDir()
 	pairs := []struct{ key, val string }{
 		{"device_name", "vm-1-custom-name"},
 		{"runtime_name", "worker-a"},
 		{"workspaces_root", workspacesRoot},
+		{"native_workdir", nativeWorkDir},
 		{"codex_native_workdir", codexNativeWorkDir},
 		{"max_concurrent_tasks", "4"},
 		{"poll_interval", "10s"},
@@ -226,6 +228,7 @@ func TestApplyConfigSetSupportsDaemonKeys(t *testing.T) {
 	if cfg.DeviceName != "vm-1-custom-name" ||
 		cfg.RuntimeName != "worker-a" ||
 		cfg.WorkspacesRoot != workspacesRoot ||
+		cfg.NativeWorkDir != nativeWorkDir ||
 		cfg.CodexNativeWorkDir != codexNativeWorkDir ||
 		cfg.MaxConcurrentTasks != 4 ||
 		cfg.PollInterval != "10s" ||

@@ -133,6 +133,46 @@ func TestBuildDaemonStartArgsForwardsCodexNativeWorkDir(t *testing.T) {
 	}
 }
 
+func TestBuildDaemonStartArgsForwardsNativeWorkDir(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("native-workdir", "", "")
+	if err := cmd.Flags().Set("native-workdir", "/Users/example/code"); err != nil {
+		t.Fatalf("set flag: %v", err)
+	}
+
+	args := buildDaemonStartArgs(cmd)
+	want := []string{"daemon", "start", "--foreground", "--native-workdir", "/Users/example/code"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("buildDaemonStartArgs() = %q, want %q", args, want)
+	}
+}
+
+func TestResolveNativeWorkDirOverrideAliasPrecedence(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("native-workdir", "", "")
+	cmd.Flags().String("codex-native-workdir", "", "")
+	cfg := cli.CLIConfig{
+		NativeWorkDir:      "/config/native",
+		CodexNativeWorkDir: "/config/legacy",
+	}
+
+	if got := resolveNativeWorkDirOverride(cmd, cfg); got != cfg.NativeWorkDir {
+		t.Fatalf("config resolution = %q, want %q", got, cfg.NativeWorkDir)
+	}
+	if err := cmd.Flags().Set("codex-native-workdir", "/flag/legacy"); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveNativeWorkDirOverride(cmd, cfg); got != "/flag/legacy" {
+		t.Fatalf("legacy flag resolution = %q, want explicit flag", got)
+	}
+	if err := cmd.Flags().Set("native-workdir", "/flag/native"); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveNativeWorkDirOverride(cmd, cfg); got != "/flag/native" {
+		t.Fatalf("generic flag resolution = %q, want generic flag", got)
+	}
+}
+
 // TestBuildDaemonStartArgsForwardsNoAutoReload matters because `daemon start`
 // re-execs itself as a foreground child: a flag the parent parsed but doesn't
 // forward is silently dropped, so the opt-out would appear to work and not.
@@ -221,6 +261,16 @@ func TestCodexNativeWorkDirFlagRegisteredOnBothDaemonCommands(t *testing.T) {
 	for _, cmd := range []*cobra.Command{daemonStartCmd, daemonRestartCmd} {
 		if cmd.Flags().Lookup("codex-native-workdir") == nil {
 			t.Errorf("daemon %s is missing --codex-native-workdir", cmd.Name())
+		}
+	}
+}
+
+func TestNativeWorkDirFlagRegisteredOnBothDaemonCommands(t *testing.T) {
+	t.Parallel()
+
+	for _, cmd := range []*cobra.Command{daemonStartCmd, daemonRestartCmd} {
+		if cmd.Flags().Lookup("native-workdir") == nil {
+			t.Errorf("daemon %s is missing --native-workdir", cmd.Name())
 		}
 	}
 }

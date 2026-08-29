@@ -727,6 +727,17 @@ func TestProviderNeedsInlineSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestPrependRuntimeBrief(t *testing.T) {
+	t.Parallel()
+
+	if got := prependRuntimeBrief("", "task"); got != "task" {
+		t.Fatalf("empty brief changed prompt: %q", got)
+	}
+	if got := prependRuntimeBrief("brief", "task"); got != "brief\n\n---\n\ntask" {
+		t.Fatalf("combined prompt = %q", got)
+	}
+}
+
 // TestComposeOpenclawIncludeRoots — the Elon must-fix regression: the
 // daemon must grant OpenClaw permission to follow the wrapper's $include
 // link from envRoot into the user's active config dir, while preserving

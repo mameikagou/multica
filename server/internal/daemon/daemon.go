@@ -5747,8 +5747,8 @@ func syncPlatformRuntimeBrief(workDir, provider string, taskCtx execenv.TaskCont
 }
 
 // buildNativePlatformRuntimeBrief mirrors syncPlatformRuntimeBrief without
-// touching the working directory. Codex app-server receives this string as
-// developerInstructions in native-cwd mode.
+// touching the user-owned working directory. Codex receives it as developer
+// instructions; other providers receive it at the front of the task prompt.
 func buildNativePlatformRuntimeBrief(provider string, taskCtx execenv.TaskContextForEnv, mode string) string {
 	switch mode {
 	case cli.PlatformContextMinimal:
@@ -5758,6 +5758,20 @@ func buildNativePlatformRuntimeBrief(provider string, taskCtx execenv.TaskContex
 	default:
 		return execenv.BuildRuntimeConfigContent(provider, taskCtx)
 	}
+}
+
+// prependRuntimeBrief is the provider-neutral native-cwd delivery path. It
+// deliberately operates on the in-memory task prompt: several CLIs have no
+// system-prompt flag, while every backend accepts the ordinary task prompt.
+// Managed workdirs keep their existing provider-native context-file path.
+func prependRuntimeBrief(brief, prompt string) string {
+	if strings.TrimSpace(brief) == "" {
+		return prompt
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return brief
+	}
+	return brief + "\n\n---\n\n" + prompt
 }
 
 // gateResumeToReachableSession clears the task's prior session unless this run
@@ -6966,11 +6980,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// path for worker tasks; leader tasks intentionally skip the assignment.
 	localAssignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
 	// A project local_directory is an explicit task scope and therefore wins
-	// over the machine-local native Codex cwd. Otherwise native mode changes
-	// only the provider cwd; envRoot remains isolated task scratch.
+	// over the machine-local native cwd. Otherwise native mode changes only the
+	// provider cwd; envRoot remains isolated task scratch.
+	nativeWorkDir := ""
+	if localAssignment == nil {
+		nativeWorkDir = d.cfg.NativeWorkDir
+	}
+	// Codex needs one additional migration input when the native mode is first
+	// enabled. Other providers keep their existing provider-specific resume
+	// gates and do not consume this value.
 	codexNativeWorkDir := ""
-	if provider == "codex" && localAssignment == nil {
-		codexNativeWorkDir = d.cfg.CodexNativeWorkDir
+	if provider == "codex" {
+		codexNativeWorkDir = nativeWorkDir
 	}
 	codexResumeSessionsSource := ""
 	if codexNativeWorkDir != "" && task.PriorSessionID != "" {
@@ -7182,7 +7203,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	envReused := false
-	if priorClaim, priorWorkDir, lockedPriorInfo, ok := d.lockReusablePriorEnvRoot(prepareCtx, task, localAssignment, envClaim.RootDir()); codexNativeWorkDir == "" && ok {
+	if priorClaim, priorWorkDir, lockedPriorInfo, ok := d.lockReusablePriorEnvRoot(prepareCtx, task, localAssignment, envClaim.RootDir()); nativeWorkDir == "" && ok {
 		defer d.releaseEnvRootClaim(priorClaim)
 		// Deterministic seam for the last-window regression: tests swap the
 		// directory here, after the claim is settled and before Reuse resolves
@@ -7262,7 +7283,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			HermesSessionStore:        hermesSessionStore,
 			ReasonixEnv:               reasonixEnv,
 			CodexCustomArgs:           codexSandboxArgs,
-			NativeWorkDir:             codexNativeWorkDir,
+			NativeWorkDir:             nativeWorkDir,
 			CodexResumeSessionID:      task.PriorSessionID,
 			CodexResumeSessionsSource: codexResumeSessionsSource,
 			Task:                      taskCtx,
@@ -7521,11 +7542,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	// Managed workdirs receive the runtime brief through their provider-native
-	// context file. Native Codex cwd must remain byte-for-byte user-owned, so
-	// render the configured full/minimal/off brief without writing and send it
-	// over app-server instead.
+	// context file. A native cwd must remain byte-for-byte user-owned, so render
+	// the configured full/minimal/off brief without writing. Codex receives it
+	// as app-server developer instructions; every other provider receives it in
+	// the task prompt below.
 	var runtimeBrief string
-	if codexNativeWorkDir != "" {
+	if nativeWorkDir != "" {
 		runtimeBrief = buildNativePlatformRuntimeBrief(provider, taskCtx, d.cfg.PlatformContextMode)
 	} else {
 		var err error
@@ -7812,7 +7834,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// as always included, and a real kiro-cli 2.13.0 ACP smoke confirms it.
 	// Prepending the full runtime brief into the ACP user prompt duplicates that
 	// context and bloats every turn.
-	if providerNeedsInlineSystemPrompt(provider) || codexNativeWorkDir != "" {
+	if nativeWorkDir != "" && provider != "codex" {
+		prompt = prependRuntimeBrief(runtimeBrief, prompt)
+	} else if providerNeedsInlineSystemPrompt(provider) || codexNativeWorkDir != "" {
 		execOpts.SystemPrompt = runtimeBrief
 	}
 
@@ -7909,7 +7933,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			freshBrief string
 			briefErr   error
 		)
-		if codexNativeWorkDir != "" {
+		if nativeWorkDir != "" {
 			freshBrief = buildNativePlatformRuntimeBrief(provider, taskCtx, d.cfg.PlatformContextMode)
 		} else {
 			freshBrief, briefErr = syncPlatformRuntimeBrief(env.WorkDir, provider, taskCtx, d.cfg.PlatformContextMode)
@@ -7918,11 +7942,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
-			if providerNeedsInlineSystemPrompt(provider) || codexNativeWorkDir != "" {
+			if (nativeWorkDir == "" && providerNeedsInlineSystemPrompt(provider)) || codexNativeWorkDir != "" {
 				execOpts.SystemPrompt = runtimeBrief
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
+		if nativeWorkDir != "" && provider != "codex" {
+			freshPrompt = prependRuntimeBrief(runtimeBrief, freshPrompt)
+		}
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {

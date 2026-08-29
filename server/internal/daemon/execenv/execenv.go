@@ -84,7 +84,7 @@ type PrepareParams struct {
 	// NativeWorkDir is a stable, user-owned cwd used without adopting the
 	// local_directory lifecycle. The daemon must not write context files,
 	// markers, skills, or cleanup metadata into it. Task-private state remains
-	// under envRoot. Currently supported only for Codex.
+	// under envRoot. It applies uniformly to every provider.
 	NativeWorkDir string
 	// CodexResumeSessionID and CodexResumeSessionsSource migrate exactly one
 	// prior managed Codex rollout into the native cwd conversation store. The
@@ -436,9 +436,6 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		return nil, fmt.Errorf("execenv: task ID is required")
 	}
 	if params.NativeWorkDir != "" {
-		if params.Provider != "codex" {
-			return nil, fmt.Errorf("execenv: native workdir is supported only for codex")
-		}
 		if params.LocalWorkDir != "" || params.LocalWorktree != nil {
 			return nil, fmt.Errorf("execenv: native workdir cannot be combined with local_directory")
 		}
@@ -717,7 +714,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// For Reasonix, deny the `ask` tool for this task through a project-scoped
 	// reasonix.toml. Degraded, not fatal: without it the task still runs under
 	// the backend's fail-closed question handling.
-	if params.Provider == "reasonix" {
+	if params.Provider == "reasonix" && params.NativeWorkDir == "" {
 		if err := writeReasonixProjectConfig(workDir, params.ReasonixEnv, manifest, logger); err != nil {
 			logger.Warn("execenv: write reasonix project config failed", "error", err)
 		}
@@ -728,7 +725,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// still reads ~/.cursor/mcp.json, but only servers with approval entries in
 	// this per-task data dir can load, so user-global MCP servers do not leak
 	// into managed-MCP runs.
-	if params.Provider == "cursor" {
+	if params.Provider == "cursor" && params.NativeWorkDir == "" {
 		cursorDataDir, err := prepareCursorMcpConfig(envRoot, workDir, params.McpConfig, params.CursorMcpAuthSource, manifest)
 		if err != nil {
 			return nil, fmt.Errorf("execenv: prepare cursor mcp config: %w", err)

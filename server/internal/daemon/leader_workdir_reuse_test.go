@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
@@ -72,6 +73,34 @@ func TestRunTaskSquadLeaderReusesWorkdirBeforeGCMetaWritten(t *testing.T) {
 	}
 	if !strings.Contains(string(args), "--resume\nsession-leader-reuse\n") {
 		t.Fatalf("second claude invocation did not resume prior session; args:\n%s", args)
+	}
+}
+
+func TestRunTaskNativeWorkDirAppliesToNonCodexProvider(t *testing.T) {
+	d, _, cleanup := newLeaderReuseTestDaemon(t)
+	defer cleanup()
+
+	nativeDir := t.TempDir()
+	sentinel := filepath.Join(nativeDir, "user-owned.txt")
+	if err := os.WriteFile(sentinel, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.cfg.NativeWorkDir = nativeDir
+	d.cfg.PlatformContextMode = cli.PlatformContextMinimal
+
+	result, err := d.runTask(context.Background(), leaderReuseTestTask("task-native-claude"), "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if !sameDir(t, result.WorkDir, nativeDir) {
+		t.Fatalf("non-Codex workdir = %q, want native cwd %q", result.WorkDir, nativeDir)
+	}
+	entries, err := os.ReadDir(nativeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(sentinel) {
+		t.Fatalf("native cwd received Multica sidecars: %v", entries)
 	}
 }
 

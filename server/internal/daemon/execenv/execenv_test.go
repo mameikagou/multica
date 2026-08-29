@@ -123,6 +123,63 @@ func TestPrepareCodexNativeWorkDirLeavesUserDirectoryUntouched(t *testing.T) {
 	}
 }
 
+func TestPrepareNativeWorkDirSupportsNonCodexWithoutSidecars(t *testing.T) {
+	cases := []struct {
+		provider  string
+		mcpConfig json.RawMessage
+	}{
+		{provider: "claude"},
+		{provider: "reasonix"},
+		{provider: "cursor", mcpConfig: json.RawMessage(`{"mcpServers":{"fetch":{"command":"uvx"}}}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider, func(t *testing.T) {
+			root := t.TempDir()
+			nativeDir := t.TempDir()
+			sentinel := filepath.Join(nativeDir, "user.txt")
+			if err := os.WriteFile(sentinel, []byte("keep me\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			env, err := Prepare(PrepareParams{
+				WorkspacesRoot: root,
+				WorkspaceID:    "workspace-1",
+				TaskID:         "task-" + tc.provider,
+				Provider:       tc.provider,
+				NativeWorkDir:  nativeDir,
+				McpConfig:      tc.mcpConfig,
+				Task: TaskContextForEnv{
+					AgentID:       "agent-1",
+					ChatSessionID: "chat-1",
+				},
+			}, slog.Default())
+			if err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			rootDir := env.RootDir
+			if env.WorkDir != nativeDir || !env.NativeWorkDir || env.LocalDirectory {
+				t.Fatalf("unexpected environment: %+v", env)
+			}
+			entries, err := os.ReadDir(nativeDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != "user.txt" {
+				t.Fatalf("native workdir received daemon sidecars: %v", entries)
+			}
+			if err := env.Cleanup(true); err != nil {
+				t.Fatalf("Cleanup: %v", err)
+			}
+			if _, err := os.Stat(sentinel); err != nil {
+				t.Fatalf("cleanup touched user-owned cwd: %v", err)
+			}
+			if _, err := os.Stat(rootDir); !os.IsNotExist(err) {
+				t.Fatalf("task scratch root still exists after cleanup: %v", err)
+			}
+		})
+	}
+}
+
 func TestResolveRootDirFreezesReadableNamesBeforePrepare(t *testing.T) {
 	t.Parallel()
 
