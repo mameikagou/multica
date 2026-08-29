@@ -104,6 +104,7 @@ type Config struct {
 	Profile                        string                // profile name (empty = default)
 	Agents                         map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
 	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
+	CodexNativeWorkDir             string                // optional stable Codex cwd; task-owned files remain under WorkspacesRoot
 	KeepEnvAfterTask               bool                  // preserve env after task for debugging
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
@@ -155,10 +156,11 @@ type Config struct {
 // Overrides allows CLI flags to override environment variables and defaults.
 // Zero values are ignored and the env/default value is used instead.
 type Overrides struct {
-	ServerURL         string
-	WorkspacesRoot    string
-	PollInterval      time.Duration
-	HeartbeatInterval time.Duration
+	ServerURL          string
+	WorkspacesRoot     string
+	CodexNativeWorkDir string
+	PollInterval       time.Duration
+	HeartbeatInterval  time.Duration
 	// AgentTimeout is a pointer so an explicit `--agent-timeout 0` (no cap) is
 	// distinguishable from "flag not passed". nil = use env/default.
 	AgentTimeout                   *time.Duration
@@ -479,6 +481,23 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 
+	// Optional native Codex cwd: explicit override > env > disabled. Validate
+	// at daemon startup so a typo never waits until a task is claimed to fail.
+	codexNativeWorkDir := strings.TrimSpace(os.Getenv("MULTICA_CODEX_NATIVE_WORKDIR"))
+	if strings.TrimSpace(overrides.CodexNativeWorkDir) != "" {
+		codexNativeWorkDir = strings.TrimSpace(overrides.CodexNativeWorkDir)
+	}
+	if codexNativeWorkDir != "" {
+		path, err := normalizeLocalPath(codexNativeWorkDir)
+		if err != nil {
+			return Config{}, fmt.Errorf("codex native workdir: %w", err)
+		}
+		if err := validateLocalPath(path); err != nil {
+			return Config{}, fmt.Errorf("codex native workdir: %w", err)
+		}
+		codexNativeWorkDir = path
+	}
+
 	// Health port: override > default
 	healthPort := DefaultHealthPort
 	if overrides.HealthPort > 0 {
@@ -577,6 +596,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Profile:                         profile,
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
+		CodexNativeWorkDir:              codexNativeWorkDir,
 		KeepEnvAfterTask:                keepEnv,
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,

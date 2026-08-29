@@ -55,6 +55,12 @@ type CLIConfig struct {
 	// profile-aware built-in default.
 	WorkspacesRoot string `json:"workspaces_root,omitempty"`
 
+	// CodexNativeWorkDir is an opt-in, machine-local cwd for Codex tasks. The
+	// daemon keeps logs, credentials, CODEX_HOME, and all generated context in
+	// per-task env roots; it only launches Codex from this directory. Empty
+	// preserves the managed per-task workdir behavior.
+	CodexNativeWorkDir string `json:"codex_native_workdir,omitempty"`
+
 	// MaxConcurrentTasks caps the number of task executions the daemon
 	// processes in parallel. Persist here to avoid re-passing
 	// --max-concurrent-tasks on every daemon start / auto-restart. 0 means

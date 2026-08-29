@@ -2025,7 +2025,16 @@ func assertNoDeveloperInstructions(t *testing.T, params map[string]any) {
 	}
 }
 
-func TestCodexThreadStartNeverInlinesSystemPrompt(t *testing.T) {
+func assertDeveloperInstructions(expected string) func(*testing.T, map[string]any) {
+	return func(t *testing.T, params map[string]any) {
+		t.Helper()
+		if got := params["developerInstructions"]; got != expected {
+			t.Errorf("developerInstructions = %v, want %q", got, expected)
+		}
+	}
+}
+
+func TestCodexThreadStartForwardsNativeRuntimeBrief(t *testing.T) {
 	t.Parallel()
 
 	c, fs, _ := newTestCodexClient(t)
@@ -2034,12 +2043,11 @@ func TestCodexThreadStartNeverInlinesSystemPrompt(t *testing.T) {
 		{
 			method:   "thread/start",
 			result:   json.RawMessage(`{"thread":{"id":"thr_fresh"}}`),
-			assertFn: assertNoDeveloperInstructions,
+			assertFn: assertDeveloperInstructions(codexRuntimeBriefCanary),
 		},
 	})
 	defer wait()
 
-	// SystemPrompt is set deliberately; it must not reach the app-server.
 	if _, _, err := c.startOrResumeThread(
 		context.Background(),
 		ExecOptions{Cwd: "/work", SystemPrompt: codexRuntimeBriefCanary},
@@ -2049,7 +2057,7 @@ func TestCodexThreadStartNeverInlinesSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestCodexThreadResumeNeverInlinesSystemPrompt(t *testing.T) {
+func TestCodexThreadResumeForwardsNativeRuntimeBrief(t *testing.T) {
 	t.Parallel()
 
 	c, fs, _ := newTestCodexClient(t)
@@ -2058,17 +2066,30 @@ func TestCodexThreadResumeNeverInlinesSystemPrompt(t *testing.T) {
 		{
 			method:   "thread/resume",
 			result:   json.RawMessage(`{"thread":{"id":"thr_prior"}}`),
-			assertFn: assertNoDeveloperInstructions,
+			assertFn: assertDeveloperInstructions(codexRuntimeBriefCanary),
 		},
 	})
 	defer wait()
 
-	// SystemPrompt is set deliberately; it must not reach the app-server.
 	if _, _, err := c.startOrResumeThread(
 		context.Background(),
 		ExecOptions{Cwd: "/work", ResumeSessionID: "thr_prior", SystemPrompt: codexRuntimeBriefCanary},
 		slog.Default(),
 	); err != nil {
+		t.Fatalf("startOrResumeThread: %v", err)
+	}
+}
+
+func TestCodexThreadStartKeepsDeveloperInstructionsNilByDefault(t *testing.T) {
+	t.Parallel()
+	c, fs, _ := newTestCodexClient(t)
+	wait := drainRPCScript(t, c, fs, []rpcResponse{{
+		method:   "thread/start",
+		result:   json.RawMessage(`{"thread":{"id":"thr_fresh"}}`),
+		assertFn: assertNoDeveloperInstructions,
+	}})
+	defer wait()
+	if _, _, err := c.startOrResumeThread(context.Background(), ExecOptions{Cwd: "/work"}, slog.Default()); err != nil {
 		t.Fatalf("startOrResumeThread: %v", err)
 	}
 }

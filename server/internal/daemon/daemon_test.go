@@ -1967,6 +1967,7 @@ func TestGateResumeToReusedWorkdir(t *testing.T) {
 		// local_directory case (GH #6806). Zero value keeps the cwd-keyed
 		// providers' behaviour.
 		sessionHomeUnreachable bool
+		workdirIndependent     bool
 		wantSession            string
 		wantReused             bool
 	}{
@@ -1985,6 +1986,15 @@ func TestGateResumeToReusedWorkdir(t *testing.T) {
 			envDir:      "/ws/task-b/workdir",
 			wantSession: "",
 			wantReused:  false,
+		},
+		{
+			name:               "native codex cwd migration keeps session",
+			sessionID:          "sess-1",
+			priorDir:           "/ws/task-a/workdir",
+			envDir:             "/code",
+			workdirIndependent: true,
+			wantSession:        "sess-1",
+			wantReused:         true,
 		},
 		{
 			name:        "session without recorded workdir drops session",
@@ -2039,7 +2049,7 @@ func TestGateResumeToReusedWorkdir(t *testing.T) {
 			task := Task{PriorSessionID: tt.sessionID, PriorWorkDir: priorDir}
 			taskCtx := execenv.TaskContextForEnv{PriorSessionResumed: tt.sessionID != ""}
 
-			reused := gateResumeToReusedWorkdir(&task, &taskCtx, envDir, !tt.sessionHomeUnreachable, slog.Default())
+			reused := gateResumeToReusedWorkdir(&task, &taskCtx, envDir, !tt.sessionHomeUnreachable, tt.workdirIndependent, slog.Default())
 
 			if reused != tt.wantReused {
 				t.Fatalf("reused = %v, want %v", reused, tt.wantReused)

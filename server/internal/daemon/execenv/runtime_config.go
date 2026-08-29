@@ -179,13 +179,20 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For Grok:        writes {workDir}/AGENTS.md  (Grok Build CLI reads AGENTS.md natively from the workdir)
 // For Qwen:        writes {workDir}/QWEN.md (Qwen Code's native context file; it also reads AGENTS.md, but QWEN.md avoids cross-runtime ambiguity)
 func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (string, error) {
-	content := buildMetaSkillContent(provider, ctx)
+	content := BuildRuntimeConfigContent(provider, ctx)
 	path := runtimeConfigPath(workDir, provider)
 	if path == "" {
 		// Unknown provider — skip config injection, prompt-only mode.
 		return content, nil
 	}
 	return content, writeRuntimeConfigFile(path, content)
+}
+
+// BuildRuntimeConfigContent renders the provider brief without writing it to
+// the working directory. Native-cwd runtimes use this to deliver instructions
+// through the provider protocol while leaving the user's directory untouched.
+func BuildRuntimeConfigContent(provider string, ctx TaskContextForEnv) string {
+	return buildMetaSkillContent(provider, ctx)
 }
 
 // runtimeConfigPath returns the absolute path to the runtime config file that

@@ -5762,13 +5762,21 @@ func sameExistingDir(a, b string) bool {
 	return os.SameFile(ai, bi)
 }
 
-func gateResumeToReusedWorkdir(task *Task, taskCtx *execenv.TaskContextForEnv, envWorkDir string, sessionHomeReachable bool, taskLog *slog.Logger) bool {
+func gateResumeToReusedWorkdir(task *Task, taskCtx *execenv.TaskContextForEnv, envWorkDir string, sessionHomeReachable, workdirIndependent bool, taskLog *slog.Logger) bool {
 	// Compare the directories, not the spelling. Reuse runs in the canonical
 	// path it validated and locked, which need not be character-identical to
 	// the PriorWorkDir the server sent — a symlinked workspaces root is enough
 	// to make them differ. A string compare would then silently drop the prior
 	// session on every follow-up task in that installation.
 	reused := task.PriorWorkDir != "" && sameExistingDir(envWorkDir, task.PriorWorkDir) && sessionHomeReachable
+	if workdirIndependent {
+		// A native Codex cwd deliberately migrates an existing thread away from
+		// its old task sandbox. The conversation store is addressed by thread ID
+		// and mounted into this task's CODEX_HOME, so cwd equality is not a
+		// prerequisite; the rollout-presence gate immediately after this call is
+		// the authoritative proof that the thread can actually resume.
+		reused = task.PriorSessionID != "" && sessionHomeReachable
+	}
 	if !reused && task.PriorSessionID != "" {
 		taskLog.Info("dropping prior session: session store not reachable from this run",
 			"session_id", task.PriorSessionID,
@@ -5861,8 +5869,19 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] != "workdir" {
 		return "", false
 	}
-	if task.AgentID == "" || (task.IssueID == "" && task.ChatSessionID == "") {
+	if !managedPriorWorkdirMatchesTask(task, workdir) {
 		return "", false
+	}
+	return workdir, true
+}
+
+// managedPriorWorkdirMatchesTask verifies the daemon-authored proofs inside a
+// resolved env workdir. Path containment and the expected three-segment shape
+// are intentionally left to callers because native-cwd migration may be
+// moving away from the daemon's newly configured workspaces root.
+func managedPriorWorkdirMatchesTask(task Task, workdir string) bool {
+	if task.AgentID == "" || (task.IssueID == "" && task.ChatSessionID == "") {
+		return false
 	}
 	// Managed-env provenance is written only for non-local resumable envs, so
 	// its presence (plus the workspace/scope/agent match) proves this is a
@@ -5871,12 +5890,12 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 	if err != nil || prov.ManagedBy != execenv.ManagedEnvProvenanceManagedBy ||
 		prov.WorkspaceID != task.WorkspaceID ||
 		prov.AgentID != task.AgentID {
-		return "", false
+		return false
 	}
 
 	data, err := os.ReadFile(filepath.Join(workdir, execenv.TaskContextMarkerRelPath))
 	if err != nil {
-		return "", false
+		return false
 	}
 	var marker struct {
 		ManagedBy     string `json:"managed_by"`
@@ -5885,18 +5904,50 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 		ChatSessionID string `json:"chat_session_id"`
 	}
 	if json.Unmarshal(data, &marker) != nil {
-		return "", false
+		return false
 	}
 	if marker.ManagedBy != execenv.TaskContextMarkerManagedBy || marker.AgentID != task.AgentID {
-		return "", false
+		return false
 	}
 	if task.IssueID != "" {
 		if prov.IssueID != task.IssueID || marker.IssueID != task.IssueID {
-			return "", false
+			return false
 		}
-		return workdir, true
+		return true
 	}
 	if prov.ChatSessionID != task.ChatSessionID || marker.ChatSessionID != task.ChatSessionID {
+		return false
+	}
+	return true
+}
+
+// nativeCodexMigrationWorkdir finds a prior daemon-owned workdir from which
+// one Codex rollout may be exposed. The normal current-root proof is preferred.
+// During a local switch the old workspaces root may have been the new native
+// cwd itself; accept that exact legacy shape too. Codex already has access to
+// the whole native cwd, and the provenance+marker pair still has to match this
+// conversation, so this does not broaden filesystem authority.
+func nativeCodexMigrationWorkdir(task Task, nativeWorkDir, workspacesRoot string) (string, bool) {
+	if workdir, ok := shouldReusePriorWorkdir(task, nil, workspacesRoot); ok {
+		return workdir, true
+	}
+	nativeRoot, err := filepath.EvalSymlinks(nativeWorkDir)
+	if err != nil {
+		return "", false
+	}
+	workdir, err := filepath.EvalSymlinks(task.PriorWorkDir)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(nativeRoot, workdir)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] != "workdir" {
+		return "", false
+	}
+	if !managedPriorWorkdirMatchesTask(task, workdir) {
 		return "", false
 	}
 	return workdir, true
@@ -6802,6 +6853,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// LocalWorkDir into execenv. handleTask already validated + locked the
 	// path for worker tasks; leader tasks intentionally skip the assignment.
 	localAssignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
+	// A project local_directory is an explicit task scope and therefore wins
+	// over the machine-local native Codex cwd. Otherwise native mode changes
+	// only the provider cwd; envRoot remains isolated task scratch.
+	codexNativeWorkDir := ""
+	if provider == "codex" && localAssignment == nil {
+		codexNativeWorkDir = d.cfg.CodexNativeWorkDir
+	}
+	codexResumeSessionsSource := ""
+	if codexNativeWorkDir != "" && task.PriorSessionID != "" {
+		// Only trust a prior session directory when the existing managed-env
+		// provenance and task marker prove it belongs to this conversation.
+		// This migrates one rollout without making arbitrary server-provided
+		// filesystem paths into read sources.
+		if priorWorkDir, ok := nativeCodexMigrationWorkdir(task, codexNativeWorkDir, d.cfg.WorkspacesRoot); ok {
+			codexResumeSessionsSource = filepath.Join(filepath.Dir(priorWorkDir), "codex-home", "sessions")
+		}
+	}
 	// Reuse intentionally skipped for local_directory tasks: the prior
 	// WorkDir is the user's own path (always present) but the reuse path
 	// loses the envRoot association the GC loop needs, and re-running
@@ -7002,7 +7070,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	envReused := false
-	if priorClaim, priorWorkDir, lockedPriorInfo, ok := d.lockReusablePriorEnvRoot(task, localAssignment, envClaim.RootDir()); ok {
+	if priorClaim, priorWorkDir, lockedPriorInfo, ok := d.lockReusablePriorEnvRoot(task, localAssignment, envClaim.RootDir()); codexNativeWorkDir == "" && ok {
 		defer priorClaim.Release()
 		// Deterministic seam for the last-window regression: tests swap the
 		// directory here, after the claim is settled and before Reuse resolves
@@ -7068,21 +7136,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			AgentName:       agentName,
 			// This run already holds the claim (envClaim above) and the reset
 			// it implies; preparation must not try to take it again.
-			EnvRootPreclaimed:     true,
-			Provider:              provider,
-			CodexVersion:          codexVersion,
-			OpenclawBin:           openclawBin,
-			McpConfig:             effectiveMcpConfig,
-			CursorMcpAuthSource:   cursorMcpAuthSource,
-			OpenclawGateway:       openclawGateway,
-			HermesSourceHome:      hermesSourceHome,
-			HermesSourceMustExist: hermesSourceMustExist,
-			HermesEnv:             hermesEnv,
-			HermesMemoryStore:     hermesMemoryStore,
-			HermesSessionStore:    hermesSessionStore,
-			ReasonixEnv:           reasonixEnv,
-			CodexCustomArgs:       codexSandboxArgs,
-			Task:                  taskCtx,
+			EnvRootPreclaimed:         true,
+			Provider:                  provider,
+			CodexVersion:              codexVersion,
+			OpenclawBin:               openclawBin,
+			McpConfig:                 effectiveMcpConfig,
+			CursorMcpAuthSource:       cursorMcpAuthSource,
+			OpenclawGateway:           openclawGateway,
+			HermesSourceHome:          hermesSourceHome,
+			HermesSourceMustExist:     hermesSourceMustExist,
+			HermesEnv:                 hermesEnv,
+			HermesMemoryStore:         hermesMemoryStore,
+			HermesSessionStore:        hermesSessionStore,
+			ReasonixEnv:               reasonixEnv,
+			CodexCustomArgs:           codexSandboxArgs,
+			NativeWorkDir:             codexNativeWorkDir,
+			CodexResumeSessionID:      task.PriorSessionID,
+			CodexResumeSessionsSource: codexResumeSessionsSource,
+			Task:                      taskCtx,
 		}
 		if localAssignment.UsesWorktree() {
 			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{LocalPath: localAssignment.AbsPath}
@@ -7327,7 +7398,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	cancelPrepare()
 	_ = d.client.ReportProgress(ctx, task.ID, fmt.Sprintf("Launching %s", provider), 1, 2)
 
-	reused := gateResumeToReusedWorkdir(&task, &taskCtx, env.WorkDir, sessionHomeReachable(provider, env, envReused), taskLog)
+	reused := gateResumeToReusedWorkdir(&task, &taskCtx, env.WorkDir, sessionHomeReachable(provider, env, envReused), codexNativeWorkDir != "", taskLog)
 	// A reused workdir is necessary but not sufficient for a Codex resume: the
 	// prior thread's rollout must actually be present in this task's CODEX_HOME
 	// sessions (MUL-4424 isolates them). Drop the resume before the brief is
@@ -7337,10 +7408,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		gateCodexResumeToRolloutPresence(&task, &taskCtx, provider, env.CodexHome, taskLog)
 	}
 
-	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
-	if err != nil {
-		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
+	// Managed workdirs receive the runtime brief through their provider-native
+	// context file. Native Codex cwd must remain byte-for-byte user-owned, so
+	// render the same brief without writing and send it over app-server instead.
+	var runtimeBrief string
+	if codexNativeWorkDir != "" {
+		runtimeBrief = execenv.BuildRuntimeConfigContent(provider, taskCtx)
+	} else {
+		var err error
+		runtimeBrief, err = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		if err != nil {
+			d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
+		}
 	}
 	// An exempt turn runs in the user's directory without having queued for it,
 	// so a sibling coding task may be writing to the same tree right now. That
@@ -7616,7 +7695,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// as always included, and a real kiro-cli 2.13.0 ACP smoke confirms it.
 	// Prepending the full runtime brief into the ACP user prompt duplicates that
 	// context and bloats every turn.
-	if providerNeedsInlineSystemPrompt(provider) {
+	if providerNeedsInlineSystemPrompt(provider) || codexNativeWorkDir != "" {
 		execOpts.SystemPrompt = runtimeBrief
 	}
 

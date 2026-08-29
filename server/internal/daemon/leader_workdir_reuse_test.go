@@ -134,6 +134,33 @@ func TestShouldReusePriorWorkdirChatAcceptsMatchingConversation(t *testing.T) {
 	}
 }
 
+func TestNativeCodexMigrationAcceptsProvenancedLegacyRootUnderNativeCwd(t *testing.T) {
+	t.Parallel()
+
+	nativeRoot := t.TempDir()
+	newWorkspacesRoot := t.TempDir()
+	workDir := filepath.Join(nativeRoot, "ws-chat", "12345678", "workdir")
+	writeChatTaskMarker(t, workDir, "agent-chat", "chat-session")
+	writeChatManagedEnvProvenance(t, workDir, "ws-chat", "chat-session", "agent-chat")
+
+	task := leaderReuseTestTask("task-chat")
+	task.WorkspaceID = "ws-chat"
+	task.IssueID = ""
+	task.ChatSessionID = "chat-session"
+	task.AgentID = "agent-chat"
+	task.PriorWorkDir = workDir
+
+	got, ok := nativeCodexMigrationWorkdir(task, nativeRoot, newWorkspacesRoot)
+	if !ok || !sameDir(t, got, workDir) {
+		t.Fatalf("native migration workdir = %q, %v; want %q, true", got, ok, workDir)
+	}
+
+	task.ChatSessionID = "another-chat"
+	if got, ok := nativeCodexMigrationWorkdir(task, nativeRoot, newWorkspacesRoot); ok {
+		t.Fatalf("accepted mismatched conversation workdir %q", got)
+	}
+}
+
 // TestShouldReusePriorWorkdirSquadLeaderAcceptsManagedProvenance is the unit
 // positive: managed shape + matching Prepare-time provenance + matching marker.
 func TestShouldReusePriorWorkdirSquadLeaderAcceptsManagedProvenance(t *testing.T) {
