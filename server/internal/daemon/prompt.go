@@ -64,6 +64,7 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	var b strings.Builder
 	b.WriteString(buildActiveSiblingRunsBlock(task.IssueID, task.ActiveSiblingRuns))
 	b.WriteString(buildSharedLocalDirectoryBlock(opts.sharedLocalDirectory))
+	b.WriteString(buildRelocatedWorkingDirectoryBlock(opts.relocatedWorkingDirectory))
 	if task.PriorSessionResumeUnavailable {
 		b.WriteString(sessionContinuityNoticeFor(task))
 	}
@@ -76,7 +77,8 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 // daemon's own execution context can answer. Kept behind PromptOption so the
 // common BuildPrompt(task, provider) call sites stay unchanged.
 type promptOpts struct {
-	sharedLocalDirectory bool
+	sharedLocalDirectory      bool
+	relocatedWorkingDirectory bool
 }
 
 // PromptOption tunes per-turn prompt copy with run-scoped context.
@@ -90,6 +92,30 @@ type PromptOption func(*promptOpts)
 // has to be told (issue #7344).
 func WithSharedLocalDirectory() PromptOption {
 	return func(o *promptOpts) { o.sharedLocalDirectory = true }
+}
+
+// WithRelocatedWorkingDirectory marks a turn whose provider conversation
+// resumed successfully even though the task now runs in a different directory.
+// The conversation still remembers paths and filesystem conclusions from the
+// prior turn, so the agent must re-establish those facts before acting on them.
+func WithRelocatedWorkingDirectory() PromptOption {
+	return func(o *promptOpts) { o.relocatedWorkingDirectory = true }
+}
+
+// resumedSessionMovedWorkdir reports whether the provider conversation will
+// continue while the filesystem context it remembers has moved. It is checked
+// after the resume gates mutate task.PriorSessionID, so a dropped/unavailable
+// resume gets the stronger continuity-loss notice instead of this relocation
+// note. Missing prior-workdir metadata is not enough evidence to claim a move.
+func resumedSessionMovedWorkdir(task Task, envWorkDir string) bool {
+	return task.PriorSessionID != "" && task.PriorWorkDir != "" && !sameExistingDir(envWorkDir, task.PriorWorkDir)
+}
+
+func buildRelocatedWorkingDirectoryBlock(relocated bool) string {
+	if !relocated {
+		return ""
+	}
+	return "## Working directory changed\n\nThe provider conversation resumed successfully, but this turn is running in a different working directory than the previous turn. Do not assume files, paths, or uncommitted changes remembered from that directory are present here. Inspect the current working tree before referring to or modifying them.\n\n"
 }
 
 // buildSharedLocalDirectoryBlock warns an unlocked turn that its working

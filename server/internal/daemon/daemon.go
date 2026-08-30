@@ -7350,6 +7350,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if localAssignment != nil && !localAssignment.UsesWorktree() && localDirectoryLockExempt(task) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}
+	if resumedSessionMovedWorkdir(task, env.WorkDir) {
+		promptOptions = append(promptOptions, WithRelocatedWorkingDirectory())
+		taskLog.Info("resuming session in a different working directory",
+			"session_id", task.PriorSessionID,
+			"prior_workdir", task.PriorWorkDir,
+			"workdir", env.WorkDir,
+		)
+	}
 	prompt := BuildPrompt(task, provider, promptOptions...)
 
 	// Pass task-scoped auth credentials and context so the spawned agent CLI

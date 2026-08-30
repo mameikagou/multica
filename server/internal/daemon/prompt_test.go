@@ -1848,3 +1848,80 @@ func TestSharedLocalDirectoryBlock(t *testing.T) {
 		}
 	})
 }
+
+func TestRelocatedWorkingDirectoryBlock(t *testing.T) {
+	t.Parallel()
+
+	chat := Task{ChatSessionID: "sess-1", ChatMessage: "continue the change"}
+
+	t.Run("absent by default", func(t *testing.T) {
+		out := BuildPrompt(chat, "pi")
+		if strings.Contains(out, "Working directory changed") {
+			t.Fatalf("relocation notice leaked into an ordinary resumed turn:\n%s", out)
+		}
+	})
+
+	t.Run("present for a relocated resumed conversation", func(t *testing.T) {
+		out := BuildPrompt(chat, "pi", WithRelocatedWorkingDirectory())
+		if !strings.Contains(out, "Working directory changed") {
+			t.Fatalf("relocation notice missing:\n%s", out)
+		}
+		if !strings.Contains(out, "conversation resumed successfully") {
+			t.Fatalf("notice does not preserve the distinction from session loss:\n%s", out)
+		}
+		if !strings.Contains(out, "Inspect the current working tree") {
+			t.Fatalf("notice does not tell the agent to re-establish filesystem facts:\n%s", out)
+		}
+	})
+
+	t.Run("appended after the cacheable prefix", func(t *testing.T) {
+		out := BuildPrompt(chat, "pi", WithRelocatedWorkingDirectory())
+		if body := buildChatPrompt(chat); !strings.HasPrefix(out, body) {
+			t.Fatalf("relocation notice was not appended after the chat body:\n%s", out)
+		}
+	})
+}
+
+func TestResumedSessionMovedWorkdir(t *testing.T) {
+	t.Parallel()
+
+	priorDir := t.TempDir()
+	currentDir := t.TempDir()
+
+	tests := []struct {
+		name string
+		task Task
+		env  string
+		want bool
+	}{
+		{
+			name: "resumed session in a different directory",
+			task: Task{PriorSessionID: "sess-1", PriorWorkDir: priorDir},
+			env:  currentDir,
+			want: true,
+		},
+		{
+			name: "same directory",
+			task: Task{PriorSessionID: "sess-1", PriorWorkDir: priorDir},
+			env:  priorDir,
+		},
+		{
+			name: "resume was dropped by an earlier gate",
+			task: Task{PriorWorkDir: priorDir},
+			env:  currentDir,
+		},
+		{
+			name: "prior directory was not recorded",
+			task: Task{PriorSessionID: "sess-1"},
+			env:  currentDir,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := resumedSessionMovedWorkdir(test.task, test.env); got != test.want {
+				t.Fatalf("resumedSessionMovedWorkdir() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
