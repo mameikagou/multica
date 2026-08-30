@@ -2736,6 +2736,12 @@ func TestShouldRetryWithFreshSession(t *testing.T) {
 			want:           true,
 		},
 		{
+			name:           "temporarily busy resume retries without declaring the session dead",
+			result:         agent.Result{Status: "failed", Error: "session already in use", ResumeRejectedTransient: true},
+			priorSessionID: "healthy-id",
+			want:           true,
+		},
+		{
 			// The reported bug: the session belongs to another provider
 			// account and the backend echoes the requested id back on the
 			// rejection, so SessionID stays non-empty. The backend still

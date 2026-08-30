@@ -196,8 +196,11 @@ func TestPiExecuteRejectsConcurrentSessionWriter(t *testing.T) {
 	if !ok {
 		t.Fatal("result channel closed without a value")
 	}
-	if result.Status != "failed" || !result.ResumeRejected {
-		t.Fatalf("result = %+v, want failed ResumeRejected", result)
+	if result.Status != "failed" || !result.ResumeRejectedTransient {
+		t.Fatalf("result = %+v, want failed ResumeRejectedTransient", result)
+	}
+	if result.ResumeRejected {
+		t.Fatal("a busy session is still healthy and must not be permanently rejected")
 	}
 	if result.SessionID != "" {
 		t.Fatalf("SessionID = %q, want empty so the live transcript is not republished", result.SessionID)

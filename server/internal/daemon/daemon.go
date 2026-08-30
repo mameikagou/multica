@@ -7714,7 +7714,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		firstResult := result
 		firstUsage := result.Usage
 		firstTools := tools
-		retiredSessionID = task.PriorSessionID
+		if !result.ResumeRejectedTransient {
+			retiredSessionID = task.PriorSessionID
+		}
 		taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
 
 		// Rebuild cold-session context before the single retry. The prior
@@ -8014,9 +8016,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 // how this went wrong before:
 //
 //  1. Would a fresh session even fix this? Only if the resume itself was
-//     refused — the transcript is gone, or it belongs to another provider
-//     account. result.ResumeRejected is the backend's positive evidence of
-//     that, and where a backend can produce it, it is the whole answer.
+//     refused — permanently because the transcript is gone or belongs to
+//     another provider account, or transiently because another live run owns
+//     it. result.ResumeRejected and result.ResumeRejectedTransient are the
+//     backend's positive evidence of those two cases. Both allow a fresh retry,
+//     but only the permanent signal retires the prior session from later
+//     lookups.
 //     Answering by exclusion alone would invert the burden of proof: the
 //     failures a new session cures are a small enumerable set, while the
 //     ones it cannot are open-ended. A network drop, a 429, a quota trip or
@@ -8047,7 +8052,7 @@ func shouldRetryWithFreshSession(result agent.Result, priorSessionID string, too
 		return false
 	}
 	// Positive evidence: the backend proved the resume was refused.
-	if result.ResumeRejected {
+	if result.ResumeRejected || result.ResumeRejectedTransient {
 		return true
 	}
 	// Positive evidence of a different kind: the resume was NOT refused —

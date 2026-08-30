@@ -200,9 +200,8 @@ type Result struct {
 	SessionID  string
 	Usage      map[string]TokenUsage // keyed by model name
 	// ResumeRejected is positive evidence that this run's requested resume
-	// was itself refused — the transcript is gone, the session belongs to
-	// another provider account, a live execution already owns the same
-	// single-writer transcript, OR the session still exists but its history
+	// was permanently refused — the transcript is gone, the session belongs to
+	// another provider account, OR the session still exists but its history
 	// can no longer be replayed to the provider (e.g. GH #5975: a stored
 	// image now exceeds the provider's max dimensions, so every resumed
 	// session/prompt is rejected before the turn runs). What unites these is
@@ -230,6 +229,12 @@ type Result struct {
 	// shouldRetryWithFreshSession, where "was this run a resume?" is already
 	// known. Do not encode it here.
 	ResumeRejected bool
+	// ResumeRejectedTransient is positive evidence that this run's requested
+	// resume cannot proceed right now, but the session itself remains healthy.
+	// The daemon may use a fresh session for this turn, but must not retire the
+	// requested session from future lookups. Backends must not set this together
+	// with ResumeRejected; the latter means the session is permanently unusable.
+	ResumeRejectedTransient bool
 	// codexInitializeRetrySafe is provider-internal evidence that an
 	// initialize timeout happened before semantic activity and after the
 	// process tree was reaped. It is intentionally not part of the public
