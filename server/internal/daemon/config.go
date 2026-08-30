@@ -30,6 +30,7 @@ const (
 	DefaultAgentTimeout                   = 0
 	DefaultCodexSemanticInactivityTimeout = 10 * time.Minute
 	DefaultCodexHandshakeTimeout          = 30 * time.Second
+	DefaultCodexThreadHandshakeTimeout    = 60 * time.Second
 	// DefaultOpenCodeIdleWatchdog shortens the no-message budget for OpenCode
 	// runs while they are not executing a tool. OpenCode streams text and tool
 	// events incrementally, so a completely silent interval here covers both a
@@ -137,6 +138,7 @@ type Config struct {
 	// for app-servers that are legitimately slow to their first event (GH #3262).
 	CodexFirstTurnNoProgressTimeout time.Duration
 	CodexHandshakeTimeout           time.Duration
+	CodexThreadHandshakeTimeout     time.Duration
 	OpenCodeIdleWatchdog            time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
 	AgentIdleWatchdog               time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog               time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
@@ -426,6 +428,19 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if overrides.CodexHandshakeTimeout > 0 {
 		codexHandshakeTimeout = overrides.CodexHandshakeTimeout
 	}
+	// Preserve the legacy global override semantics while giving the heavy
+	// thread RPCs a wider built-in default. The CLI resolves flag, env and
+	// persisted config values into Overrides, while embedded callers may reach
+	// LoadConfig with the environment directly.
+	codexThreadHandshakeTimeout := DefaultCodexThreadHandshakeTimeout
+	if raw, ok := os.LookupEnv("MULTICA_CODEX_HANDSHAKE_TIMEOUT"); ok && strings.TrimSpace(raw) != "" {
+		if parsed, parseErr := time.ParseDuration(strings.TrimSpace(raw)); parseErr == nil && parsed > 0 {
+			codexThreadHandshakeTimeout = codexHandshakeTimeout
+		}
+	}
+	if overrides.CodexHandshakeTimeout > 0 {
+		codexThreadHandshakeTimeout = overrides.CodexHandshakeTimeout
+	}
 
 	maxConcurrentTasks, err := intFromEnv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", DefaultMaxConcurrentTasks)
 	if err != nil {
@@ -659,6 +674,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexSemanticInactivityTimeout:  codexSemanticInactivityTimeout,
 		CodexFirstTurnNoProgressTimeout: codexFirstTurnNoProgressTimeout,
 		CodexHandshakeTimeout:           codexHandshakeTimeout,
+		CodexThreadHandshakeTimeout:     codexThreadHandshakeTimeout,
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentToolWatchdog:               agentToolWatchdog,

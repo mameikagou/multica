@@ -59,7 +59,12 @@ type ExecOptions struct {
 	// protocol transport. It is currently consumed by Codex app-server;
 	// zero uses the provider default rather than disabling the bound.
 	HandshakeTimeout time.Duration
-	ResumeSessionID  string // if non-empty, resume a previous agent session
+	// ThreadHandshakeTimeout optionally gives Codex's heavier thread/start and
+	// thread/resume RPCs a wider budget than initialize and turn/start. Zero
+	// preserves the legacy behavior for callers that explicitly set
+	// HandshakeTimeout; when both are zero Codex uses separate built-in defaults.
+	ThreadHandshakeTimeout time.Duration
+	ResumeSessionID        string // if non-empty, resume a previous agent session
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the
