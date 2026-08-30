@@ -201,7 +201,8 @@ type Result struct {
 	Usage      map[string]TokenUsage // keyed by model name
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was itself refused — the transcript is gone, the session belongs to
-	// another provider account, OR the session still exists but its history
+	// another provider account, a live execution already owns the same
+	// single-writer transcript, OR the session still exists but its history
 	// can no longer be replayed to the provider (e.g. GH #5975: a stored
 	// image now exceeds the provider's max dimensions, so every resumed
 	// session/prompt is rejected before the turn runs). What unites these is

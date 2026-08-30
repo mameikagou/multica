@@ -5769,14 +5769,16 @@ func sameExistingDir(a, b string) bool {
 }
 
 func gateResumeToReachableSession(task *Task, taskCtx *execenv.TaskContextForEnv, provider, envWorkDir string, sessionHomeReachable bool, taskLog *slog.Logger) bool {
-	// Compare the directories, not the spelling. Reuse runs in the canonical
-	// path it validated and locked, which need not be character-identical to
-	// the PriorWorkDir the server sent — a symlinked workspaces root is enough
-	// to make them differ. A string compare would then silently drop the prior
-	// session on every follow-up task in that installation.
-	reachable := task.PriorWorkDir != "" && sameExistingDir(envWorkDir, task.PriorWorkDir) && sessionHomeReachable
-	if provider == "pi" || provider == "omp" {
+	var reachable bool
+	if providerUsesPiSessionFile(provider) {
 		reachable = piSessionFilePresent(task.PriorSessionID)
+	} else {
+		// Compare the directories, not the spelling. Reuse runs in the canonical
+		// path it validated and locked, which need not be character-identical to
+		// the PriorWorkDir the server sent — a symlinked workspaces root is enough
+		// to make them differ. A string compare would then silently drop the prior
+		// session on every follow-up task in that installation.
+		reachable = task.PriorWorkDir != "" && sameExistingDir(envWorkDir, task.PriorWorkDir) && sessionHomeReachable
 	}
 	if !reachable && task.PriorSessionID != "" {
 		taskLog.Info("dropping prior session: session store not reachable from this run",
@@ -5798,12 +5800,24 @@ func gateResumeToReachableSession(task *Task, taskCtx *execenv.TaskContextForEnv
 	return reachable
 }
 
+func providerUsesPiSessionFile(provider string) bool {
+	if provider == "pi" {
+		return true
+	}
+	desc, ok := agent.BuiltinRuntimeByID(provider)
+	return ok && desc.ProtocolFamily == "pi"
+}
+
+// piSessionFilePresent proves there is persisted history to resume. It does
+// not claim the transcript is idle: the Pi backend takes an exclusive lock for
+// the complete child-process lifetime and reports a busy resume as rejected so
+// runTask falls back to its existing one-shot fresh-session path.
 func piSessionFilePresent(sessionID string) bool {
 	if sessionID == "" {
 		return false
 	}
 	info, err := os.Stat(sessionID)
-	return err == nil && info.Mode().IsRegular()
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 // sessionHomeReachable reports whether a session recorded by a prior task on
