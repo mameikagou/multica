@@ -68,6 +68,8 @@ Web / Desktop / Mobile
 | 取消旧 turn 后立即尝试复用目录，失败便冷启动 | 替代任务等待旧执行发出明确的环境释放信号 | 避免取消/追加消息时丢会话 |
 | Pi/OMP 恢复逻辑错误地依赖 workdir | 直接校验并恢复其独立 JSONL session 文件 | cwd 改变后仍保留 Pi 历史 |
 | Codex rollout 与旧任务目录耦合 | 使用稳定 conversation store，并安全迁移已有 rollout | 切换到 native cwd 后仍可继续 Codex thread |
+| Codex 启动 RPC 共用 30 秒超时 | 轻量 RPC 保持 30 秒，`thread/start` 和 `thread/resume` 默认使用 60 秒 | 避免加载模型目录、MCP 或历史时误判启动失败 |
+| 替代任务可能与旧进程同时写同一 session | Codex 和 Pi 按 conversation/session store 串行化 writer | 防止取消并追加消息时损坏 rollout 或 JSONL 序号 |
 | 重命名的本地构建可能不在子进程 PATH | daemon 把当前 CLI 的稳定别名加入任务 PATH | `multica` 命令保持可用，但不强迫 Agent 调用 |
 | 打开 Chat 后还要再点一次最近对话 | 前端自动打开最近会话 | 降低无意义操作 |
 | 进行中任务的 token 尾量可能未进入统计 | 服务端统计补入 live usage tail | 正常展示本地 Agent 的 token 使用量 |
@@ -81,7 +83,10 @@ Web / Desktop / Mobile
 - `c5f9479dc`：Chat 自动打开最近会话；
 - `a68612df2`：Pi 跨 workdir 恢复 session；
 - `9120e85ad`：Codex native cwd 和 rollout 迁移；
-- `0cd106f242`：将 native cwd 泛化到全部 provider。
+- `0cd106f242`：将 native cwd 泛化到全部 provider；
+- `bf4dd3a95`：串行化 Pi session transcript writer；
+- `8c29fa194`：拆分 Codex 轻量 RPC 与 thread setup 超时；
+- `149f0ef56`：串行化 Codex conversation session writer。
 
 ## 平台上下文模式
 
@@ -180,6 +185,10 @@ multica --profile desktop-api.multica.ai config set \
 
 # 清理旧版 Codex-only 配置；新版本仍兼容它，但不建议同时保留两套键。
 multica --profile desktop-api.multica.ai config set codex_native_workdir ""
+
+# 清理旧的全局握手超时覆盖，启用新版本的 30s/60s 分层默认值。
+# 若保留显式值（例如 2m），它会继续同时覆盖轻量 RPC 和 thread RPC。
+multica --profile desktop-api.multica.ai config set codex_handshake_timeout ""
 ```
 
 `workspaces_root` 继续存放 task logs、凭证、provider home 和 session scratch；它不再是 Agent 的 cwd。
@@ -198,6 +207,28 @@ multica --profile desktop-api.multica.ai config show
 2. `git status --short` 不出现 Multica 生成的 `AGENTS.md`、`.agent_context/`、`reasonix.toml` 或 `.cursor/mcp.json`；
 3. `minimal` 模式下能看到 Skill 清单，但不会出现强制激活规则；
 4. `multica` 命令仍在 PATH 中，只有任务确实需要时才调用。
+
+再做一次会话连续性回归：在同一 Codex 对话里发出一条要求记住随机短语的消息，运行中停止并追加新消息，然后询问该短语。预期 `thread/resume` 在 60 秒预算内完成，历史仍在，并且 daemon 日志中没有 rollout ordinal 重复或连续的 30 秒 `thread/start` / `thread/resume` 超时。
+
+### WSL 设备差异
+
+WSL 使用同一套源码和构建命令，但 profile 与路径属于 WSL 自己，不要照搬 macOS 的绝对路径：
+
+```bash
+PROFILE="desktop-api.multica.ai"    # 替换为 WSL 实际 profile
+CODE_ROOT="$HOME/code"
+
+multica --profile "$PROFILE" config set \
+  workspaces_root "$HOME/.local/share/multica/workspaces"
+multica --profile "$PROFILE" config set native_workdir "$CODE_ROOT"
+multica --profile "$PROFILE" config set platform_context_mode minimal
+multica --profile "$PROFILE" config set codex_native_workdir ""
+multica --profile "$PROFILE" config set codex_handshake_timeout ""
+multica --profile "$PROFILE" daemon restart
+multica --profile "$PROFILE" daemon status --output json
+```
+
+普通升级只需重启 Multica daemon，不需要重启整个 WSL。只有 WSL 自身或其 init/网络状态异常时，才从 Windows PowerShell 执行 `wsl --shutdown` 后重新进入发行版。
 
 ### 会话迁移预期
 
