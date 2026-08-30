@@ -49,7 +49,14 @@ func createTaskDir(t *testing.T, root, wsID, dirName string, meta *execenv.GCMet
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := json.Marshal(execenv.EnvRootOwner{WorkspaceID: wsID, TaskID: dirName})
+	// Production task directories end in the task key rather than the full
+	// task ID. Keep human-readable fixture names while making the owner marker
+	// obey the same path/identity contract enforced by GC.
+	taskID := dirName
+	if i := strings.LastIndex(dirName, "-"); i >= 0 && i+1 < len(dirName) {
+		taskID = dirName[i+1:]
+	}
+	owner, err := json.Marshal(execenv.EnvRootOwner{WorkspaceID: wsID, TaskID: taskID})
 	if err != nil {
 		t.Fatal(err)
 	}
