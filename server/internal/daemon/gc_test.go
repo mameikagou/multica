@@ -49,6 +49,13 @@ func createTaskDir(t *testing.T, root, wsID, dirName string, meta *execenv.GCMet
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	owner, err := json.Marshal(execenv.EnvRootOwner{WorkspaceID: wsID, TaskID: dirName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, ".task_owner"), owner, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if meta != nil {
 		data, _ := json.Marshal(meta)
 		if err := os.WriteFile(filepath.Join(taskDir, ".gc_meta.json"), data, 0o644); err != nil {
@@ -512,12 +519,92 @@ func TestCleanTaskDir_RemovesDirectory(t *testing.T) {
 		t.Fatal("task dir should exist before cleanup")
 	}
 
-	if bytes := d.cleanTaskDir(taskDir); bytes < 64 {
+	if bytes, removed := d.cleanTaskDir(taskDir); !removed || bytes < 64 {
 		t.Fatalf("reclaimed bytes = %d, want at least payload size", bytes)
 	}
 
 	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
 		t.Fatal("task dir should be removed after cleanup")
+	}
+}
+
+func TestRunGC_MisconfiguredRootPreservesForeignDirectories(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	d.cfg.GCOrphanTTL = 0
+	projectDir := filepath.Join(d.cfg.WorkspacesRoot, "analyze-serenity-event-study-20260827")
+	dataDir := filepath.Join(projectDir, "data")
+	database := filepath.Join(dataDir, "research.sqlite")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(database, []byte("do not delete"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d.runGC(context.Background())
+
+	if got, err := os.ReadFile(database); err != nil || string(got) != "do not delete" {
+		t.Fatalf("GC mutated foreign data under a misconfigured root: data=%q err=%v", got, err)
+	}
+}
+
+func TestCleanTaskDir_RefusesOwnerPathMismatch(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	taskDir := filepath.Join(d.cfg.WorkspacesRoot, "source-repository", "data")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := json.Marshal(execenv.EnvRootOwner{WorkspaceID: "workspace-id", TaskID: "task-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, ".task_owner"), owner, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	survivor := filepath.Join(taskDir, "research.sqlite")
+	if err := os.WriteFile(survivor, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes, removed := d.cleanTaskDir(taskDir); removed || bytes != 0 {
+		t.Fatalf("cleanTaskDir removed owner/path mismatch: removed=%v bytes=%d", removed, bytes)
+	}
+	if _, err := os.Stat(survivor); err != nil {
+		t.Fatalf("owner/path mismatch data was not preserved: %v", err)
+	}
+}
+
+func TestCleanTaskDir_AcceptsLegacyOwnerWithGCWorkspaceIdentity(t *testing.T) {
+	t.Parallel()
+
+	d := newGCTestDaemon(t, http.NewServeMux())
+	taskDir := filepath.Join(d.cfg.WorkspacesRoot, "ws1", "task1")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, ".task_owner"), []byte("task1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := json.Marshal(execenv.GCMeta{Kind: execenv.GCKindIssue, WorkspaceID: "ws1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, ".gc_meta.json"), meta, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, "payload"), []byte("owned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, removed := d.cleanTaskDir(taskDir); !removed {
+		t.Fatal("legacy task owner with matching GC workspace identity was not removed")
+	}
+	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
+		t.Fatalf("legacy owned task directory still exists: %v", err)
 	}
 }
 
@@ -539,7 +626,7 @@ func TestCleanTaskDir_RemovesStableRootRecord(t *testing.T) {
 	}
 	original := env.RootDir
 	d := &Daemon{cfg: Config{WorkspacesRoot: root}, logger: slog.Default()}
-	if bytes := d.cleanTaskDir(original); bytes <= 0 {
+	if bytes, removed := d.cleanTaskDir(original); !removed || bytes <= 0 {
 		t.Fatalf("reclaimed bytes = %d, want owner metadata bytes", bytes)
 	}
 
