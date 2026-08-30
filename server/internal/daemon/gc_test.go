@@ -528,7 +528,7 @@ func TestCleanTaskDir_RemovesDirectory(t *testing.T) {
 	}
 }
 
-func TestRunGC_MisconfiguredRootPreservesForeignDirectories(t *testing.T) {
+func TestRunGC_SharedRootPreservesForeignDirectories(t *testing.T) {
 	t.Parallel()
 
 	d := newGCTestDaemon(t, http.NewServeMux())
@@ -546,7 +546,7 @@ func TestRunGC_MisconfiguredRootPreservesForeignDirectories(t *testing.T) {
 	d.runGC(context.Background())
 
 	if got, err := os.ReadFile(database); err != nil || string(got) != "do not delete" {
-		t.Fatalf("GC mutated foreign data under a misconfigured root: data=%q err=%v", got, err)
+		t.Fatalf("GC mutated non-Multica data under a shared root: data=%q err=%v", got, err)
 	}
 }
 
