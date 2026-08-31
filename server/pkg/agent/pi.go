@@ -495,9 +495,9 @@ func piSessionBusyResult(label, sessionPath string) *Session {
 	close(msgCh)
 	resCh := make(chan Result, 1)
 	resCh <- Result{
-		Status:         "failed",
-		Error:          fmt.Sprintf("%s session file %q is already in use by another execution", label, sessionPath),
-		ResumeRejected: true,
+		Status:                  "failed",
+		Error:                   fmt.Sprintf("%s session file %q is already in use by another execution", label, sessionPath),
+		ResumeRejectedTransient: true,
 	}
 	close(resCh)
 	return &Session{Messages: msgCh, Result: resCh}
