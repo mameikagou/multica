@@ -42,7 +42,17 @@ vi.mock("./components/chat-thread-list", () => ({
   ),
 }));
 vi.mock("./components/chat-session-header", () => ({
-  ChatSessionHeader: () => <div>chat-session-header</div>,
+  ChatSessionHeader: ({
+    session,
+    onArchive,
+  }: {
+    session: ChatSession;
+    onArchive: (session: ChatSession) => void;
+  }) => (
+    <button type="button" onClick={() => onArchive(session)}>
+      archive-current
+    </button>
+  ),
 }));
 vi.mock("./components/chat-empty-state", () => ({
   EmptyState: () => <div>chat-empty-state</div>,
@@ -101,7 +111,6 @@ const agentsSettledRef = vi.hoisted(() => ({ current: true }));
 const sessionsRef = vi.hoisted(() => ({ current: [] as ChatSession[] }));
 const sessionsLoadedRef = vi.hoisted(() => ({ current: true }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
-const mockHandleSelectSession = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 const mockSetActiveSession = vi.hoisted(() =>
   vi.fn((id: string | null) => {
@@ -109,6 +118,19 @@ const mockSetActiveSession = vi.hoisted(() =>
     storeListeners.forEach((l) => l());
   }),
 );
+const mockHandleSelectSession = vi.hoisted(() =>
+  vi.fn((session: ChatSession) => mockSetActiveSession(session.id)),
+);
+const mockAdvanceSelectionAfterArchive = vi.hoisted(() =>
+  vi.fn((archived: ChatSession) => {
+    const next = sessionsRef.current.find(
+      (candidate) =>
+        candidate.status === "active" && candidate.id !== archived.id,
+    );
+    mockSetActiveSession(next?.id ?? null);
+  }),
+);
+const mockArchiveSession = vi.hoisted(() => vi.fn());
 const subscribeToStore = vi.hoisted(() => (cb: () => void) => {
   storeListeners.add(cb);
   return () => storeListeners.delete(cb);
@@ -142,7 +164,10 @@ vi.mock("./components/use-chat-controller", async () => {
         () => storeRef.current,
       ).activeSessionId,
       selectedAgentId: null,
-      currentSession: null,
+      currentSession:
+        sessionsRef.current.find(
+          (session) => session.id === storeRef.current.activeSessionId,
+        ) ?? null,
       isSessionArchived: false,
       isAgentArchived: false,
       isAgentRuntimeBound: true,
@@ -167,8 +192,8 @@ vi.mock("./components/use-chat-controller", async () => {
       handleNewChat: vi.fn(),
       handleStartNewChat: mockStartNewChat,
       handleSelectSession: mockHandleSelectSession,
-      advanceSelectionAfterArchive: vi.fn(),
-      archiveSession: vi.fn(),
+      advanceSelectionAfterArchive: mockAdvanceSelectionAfterArchive,
+      archiveSession: mockArchiveSession,
       setActiveSession: mockSetActiveSession,
       setSelectedAgentId: vi.fn(),
     }),
@@ -225,15 +250,16 @@ function session(
 
 function renderPage(search: string, { strict = false } = {}) {
   const replace = vi.fn();
-  const navigation: NavigationAdapter = {
+  let currentSearch = search;
+  const navigation = (): NavigationAdapter => ({
     push: vi.fn(),
     replace,
     back: vi.fn(),
     pathname: "/acme/chat",
-    searchParams: new URLSearchParams(search),
+    searchParams: new URLSearchParams(currentSearch),
     hash: "",
     getShareableUrl: (path) => path,
-  };
+  });
   // A fresh element per render — reusing one element object lets React bail
   // out of re-rendering, which would make the rerender-based tests vacuous.
   // ChatPage reads the client-only quick-actions pending marker via useQuery,
@@ -243,7 +269,7 @@ function renderPage(search: string, { strict = false } = {}) {
     const page = (
       <QueryClientProvider client={qc}>
         <I18nProvider locale="en" resources={TEST_RESOURCES}>
-          <NavigationProvider value={navigation}>
+          <NavigationProvider value={navigation()}>
             <ChatPage />
           </NavigationProvider>
         </I18nProvider>
@@ -252,7 +278,13 @@ function renderPage(search: string, { strict = false } = {}) {
     return strict ? <StrictMode>{page}</StrictMode> : page;
   };
   const view = render(makeUi());
-  return { replace, rerender: () => view.rerender(makeUi()) };
+  return {
+    replace,
+    rerender: (nextSearch?: string) => {
+      if (nextSearch !== undefined) currentSearch = nextSearch;
+      view.rerender(makeUi());
+    },
+  };
 }
 
 beforeEach(() => {
@@ -283,6 +315,17 @@ describe("ChatPage default session", () => {
     expect(mockHandleSelectSession).toHaveBeenCalledWith(pinned);
   });
 
+  it("keeps the default selection under StrictMode effect replay", () => {
+    const latest = session("latest", "2026-08-29T12:00:00Z");
+    sessionsRef.current = [latest];
+
+    const { replace } = renderPage("", { strict: true });
+
+    expect(mockHandleSelectSession).toHaveBeenCalledOnce();
+    expect(storeRef.current.activeSessionId).toBe("latest");
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=latest");
+  });
+
   it("waits for sessions to load before choosing the default", () => {
     sessionsLoadedRef.current = false;
     sessionsRef.current = [];
@@ -310,6 +353,26 @@ describe("ChatPage default session", () => {
     renderPage("agent=agent-1");
     expect(mockHandleSelectSession).not.toHaveBeenCalled();
     expect(mockStartNewChat).toHaveBeenCalledWith(agent);
+  });
+
+  it("does not open another chat after archiving an explicit compact deep link", () => {
+    layout.width = FOLD_INNER;
+    const explicit = session("explicit", "2026-08-29T12:00:00Z");
+    const unrelated = session("unrelated", "2026-08-28T12:00:00Z");
+    sessionsRef.current = [explicit, unrelated];
+    storeRef.current = { activeSessionId: explicit.id };
+    const { replace, rerender } = renderPage("session=explicit");
+
+    fireEvent.click(screen.getByRole("button", { name: "archive-current" }));
+    expect(mockArchiveSession).toHaveBeenCalledWith("explicit");
+    expect(storeRef.current.activeSessionId).toBeNull();
+    expect(replace).toHaveBeenCalledWith("/acme/chat");
+
+    // Simulate the navigation adapter committing replace(). The explicit
+    // intent consumed the one-shot, so the remaining history stays closed.
+    rerender("");
+    expect(storeRef.current.activeSessionId).toBeNull();
+    expect(mockHandleSelectSession).not.toHaveBeenCalled();
   });
 });
 

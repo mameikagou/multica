@@ -62,6 +62,7 @@ export function ChatPage() {
   const { t } = useT("chat");
   const { searchParams, replace } = useNavigation();
   const wsPaths = useWorkspacePaths();
+  const chatPath = wsPaths.chat();
   const isCompact = useIsCompact();
 
   const c = useChatController({ isActive: true });
@@ -69,6 +70,7 @@ export function ChatPage() {
     sessions: chatSessions,
     sessionsLoaded,
     handleSelectSession: selectSession,
+    setActiveSession,
   } = c;
   const { data: quickActionsPending = null } = useQuery(
     chatQuickActionsPendingOptions(c.activeSessionId ?? ""),
@@ -87,6 +89,12 @@ export function ChatPage() {
   // conversation pane is always mounted so it only needs to reset itself once a
   // real session takes over.
   const [composingNew, setComposingNew] = useState(false);
+  // Both refs belong to the URL/store reconciliation below. Explicit URL
+  // intents and manual navigation consume the default selection for this page
+  // visit; the session-intent ref additionally prevents an async URL replace
+  // from restoring a chat the user just archived or left.
+  const defaultSelectionHandled = useRef(false);
+  const consumedSessionIntent = useRef<string | null>(null);
   useEffect(() => {
     // Read the LIVE store value for the same reason as the session sync
     // effects below: under StrictMode's double-invoke this effect replays
@@ -96,58 +104,59 @@ export function ChatPage() {
     if (useChatStore.getState().activeSessionId) setComposingNew(false);
   }, [c.activeSessionId]);
 
-  // Two-way sync between the URL (`?session=`) and the chat store's
-  // activeSessionId. Both effects read the LIVE store value via
-  // `useChatStore.getState()` rather than the render-captured `c.activeSessionId`.
-  // That is what keeps them from fighting on mount: a naive mirror effect fires
-  // with the stale (null) snapshot and "corrects" the URL by stripping the
-  // session before the URL→store effect has applied — breaking deep links and
-  // making selection / new-chat feel unresponsive. Reading getState() sees the
-  // value the sibling effect just wrote, so the reconciliation converges in one
-  // pass and is idempotent under StrictMode's double-invoke.
-
-  // URL → store: deep link, refresh, notification click, back/forward.
-  useEffect(() => {
-    if (urlSession !== useChatStore.getState().activeSessionId) {
-      c.setActiveSession(urlSession);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- react to URL only
-  }, [urlSession]);
-
-  // store → URL: thread selection, "new chat", and sessions created by sending.
+  // Reconcile the URL, store, and one-shot default in one effect. Splitting the
+  // directions lets StrictMode replay URL → store with the mount snapshot after
+  // default selection has already updated the live store, clearing the session
+  // the default just chose. The consumed intent also matters after an explicit
+  // deep link: while replace() is still committing, a later archive/project
+  // action must update the URL instead of re-applying the stale parameter.
   useEffect(() => {
     const live = useChatStore.getState().activeSessionId;
-    const current = searchParams.get("session") || null;
-    if (live !== current) {
-      const base = wsPaths.chat();
-      replace(live ? `${base}?session=${live}` : base);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- react to store only
-  }, [c.activeSessionId]);
+    const base = chatPath;
 
-  // A bare Chat navigation should be immediately useful: once the list has
-  // loaded, open the first active row instead of leaving the detail pane on a
-  // second-click prompt. Explicit `?session=` and `?agent=` intents always win.
-  // The one-shot ref is also load-bearing on compact layouts: after the user
-  // presses Back to return to the thread list, the resulting bare URL must not
-  // immediately reopen the same conversation.
-  const defaultSelectionHandled = useRef(false);
-  useEffect(() => {
-    if (
-      defaultSelectionHandled.current ||
-      urlSession ||
-      urlAgent ||
-      !sessionsLoaded
-    ) {
+    if (urlSession) {
+      defaultSelectionHandled.current = true;
+      if (consumedSessionIntent.current !== urlSession) {
+        consumedSessionIntent.current = urlSession;
+        if (live !== urlSession) setActiveSession(urlSession);
+        return;
+      }
+      if (live !== urlSession) {
+        replace(live ? `${base}?session=${live}` : base);
+      }
       return;
     }
+
+    consumedSessionIntent.current = null;
+    if (urlAgent) {
+      defaultSelectionHandled.current = true;
+      if (live) setActiveSession(null);
+      return;
+    }
+
+    if (live) {
+      defaultSelectionHandled.current = true;
+      replace(`${base}?session=${live}`);
+      return;
+    }
+    if (defaultSelectionHandled.current || !sessionsLoaded) return;
+
     defaultSelectionHandled.current = true;
-    if (useChatStore.getState().activeSessionId) return;
     const latest = sortChatSessions(
       chatSessions.filter((session) => session.status === "active"),
     )[0];
     if (latest) selectSession(latest);
-  }, [urlSession, urlAgent, sessionsLoaded, chatSessions, selectSession]);
+  }, [
+    urlSession,
+    urlAgent,
+    sessionsLoaded,
+    chatSessions,
+    selectSession,
+    c.activeSessionId,
+    setActiveSession,
+    replace,
+    chatPath,
+  ]);
 
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "multica_chat_layout",
