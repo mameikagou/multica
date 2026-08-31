@@ -434,7 +434,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// LoadConfig with the environment directly.
 	codexThreadHandshakeTimeout := DefaultCodexThreadHandshakeTimeout
 	if raw, ok := os.LookupEnv("MULTICA_CODEX_HANDSHAKE_TIMEOUT"); ok && strings.TrimSpace(raw) != "" {
-		if parsed, parseErr := time.ParseDuration(strings.TrimSpace(raw)); parseErr == nil && parsed > 0 {
+		if parsed, parseErr := parseFlexDuration(strings.TrimSpace(raw)); parseErr == nil && parsed > 0 {
 			codexThreadHandshakeTimeout = codexHandshakeTimeout
 		}
 	}
