@@ -41,21 +41,22 @@ export function ServiceTierSettingField({
   const modelsQuery = useQuery(
     runtimeModelsOptions(runtimeOnline ? runtimeId : null),
   );
-  const entry = findModelCapabilityEntry(
-    modelsQuery.data?.models ?? [],
-    model,
-    provider,
-  );
+  const models = modelsQuery.data?.models ?? [];
+  const entry = findModelCapabilityEntry(models, model, provider);
   const tiers = entry?.service_tiers ?? [];
+  const supportsExplicitStandard = models.some(
+    (candidate) =>
+      candidate.supports_explicit_standard_service_tier === true,
+  );
 
-  if (tiers.length === 0 && !value) return null;
+  if (tiers.length === 0 && !supportsExplicitStandard && !value) return null;
 
   return (
     <SettingsRow label={label} size="select-wide">
       <ServiceTierPicker
         value={value}
         tiers={tiers}
-        provider={provider}
+        supportsExplicitStandard={supportsExplicitStandard}
         canEdit={canEdit}
         onChange={onChange}
       />
@@ -66,21 +67,20 @@ export function ServiceTierSettingField({
 function ServiceTierPicker({
   value,
   tiers,
-  provider,
+  supportsExplicitStandard,
   canEdit,
   onChange,
 }: {
   value: string;
   tiers: RuntimeModelServiceTier[];
-  provider: string;
+  supportsExplicitStandard: boolean;
   canEdit: boolean;
   onChange: (next: string) => Promise<void> | void;
 }) {
   const { t } = useT("agents");
   const [open, setOpen] = useState(false);
-  const availableTiers =
-    provider === "codex"
-      ? [
+  const availableTiers = supportsExplicitStandard
+    ? [
           {
             id: "default",
             name: t(($) => $.pickers.service_tier_standard),
@@ -89,8 +89,8 @@ function ServiceTierPicker({
             ),
           },
           ...tiers.filter((tier) => tier.id !== "default"),
-        ]
-      : tiers;
+      ]
+    : tiers;
   const selected = value
     ? availableTiers.find((tier) => tier.id === value)
     : undefined;

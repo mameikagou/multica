@@ -4153,20 +4153,22 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 		Description string `json:"description,omitempty"`
 	}
 	type modelWire struct {
-		ID           string                 `json:"id"`
-		Label        string                 `json:"label"`
-		Provider     string                 `json:"provider,omitempty"`
-		Default      bool                   `json:"default,omitempty"`
-		Thinking     *modelThinkingWire     `json:"thinking,omitempty"`
-		ServiceTiers []modelServiceTierWire `json:"service_tiers,omitempty"`
+		ID                                  string                 `json:"id"`
+		Label                               string                 `json:"label"`
+		Provider                            string                 `json:"provider,omitempty"`
+		Default                             bool                   `json:"default,omitempty"`
+		Thinking                            *modelThinkingWire     `json:"thinking,omitempty"`
+		ServiceTiers                        []modelServiceTierWire `json:"service_tiers,omitempty"`
+		SupportsExplicitStandardServiceTier bool                   `json:"supports_explicit_standard_service_tier,omitempty"`
 	}
 	wire := make([]modelWire, 0, len(models))
 	for _, m := range models {
 		entry := modelWire{
-			ID:       m.ID,
-			Label:    m.Label,
-			Provider: m.Provider,
-			Default:  m.Default,
+			ID:                                  m.ID,
+			Label:                               m.Label,
+			Provider:                            m.Provider,
+			Default:                             m.Default,
+			SupportsExplicitStandardServiceTier: m.SupportsExplicitStandardServiceTier,
 		}
 		if m.Thinking != nil {
 			levels := make([]thinkingLevelWire, 0, len(m.Thinking.SupportedLevels))
