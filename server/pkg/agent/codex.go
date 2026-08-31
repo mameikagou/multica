@@ -2344,7 +2344,10 @@ func isCodexThreadSetupRPC(method string) bool {
 func (c *codexClient) handshakeTimeoutFor(method string) time.Duration {
 	switch method {
 	case "thread/start", "thread/resume":
-		return c.threadHandshakeTimeout
+		if c.threadHandshakeTimeout > 0 {
+			return c.threadHandshakeTimeout
+		}
+		return c.handshakeTimeout
 	default:
 		return c.handshakeTimeout
 	}

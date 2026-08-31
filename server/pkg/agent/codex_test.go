@@ -2597,6 +2597,12 @@ func TestCodexHandshakeTimeoutFor(t *testing.T) {
 			t.Fatalf("handshakeTimeoutFor(%q) = %s, want 30s", method, got)
 		}
 	}
+	c.threadHandshakeTimeout = 0
+	for _, method := range []string{"thread/start", "thread/resume"} {
+		if got := c.handshakeTimeoutFor(method); got != 30*time.Second {
+			t.Fatalf("zero thread timeout handshakeTimeoutFor(%q) = %s, want base 30s fallback", method, got)
+		}
+	}
 }
 
 func TestCodexExecuteThreadStartTimeoutLifecycleIsFailClosed(t *testing.T) {
