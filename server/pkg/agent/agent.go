@@ -59,7 +59,13 @@ type ExecOptions struct {
 	// protocol transport. It is currently consumed by Codex app-server;
 	// zero uses the provider default rather than disabling the bound.
 	HandshakeTimeout time.Duration
-	ResumeSessionID  string // if non-empty, resume a previous agent session
+	// TurnInterruptTimeout bounds how long the Codex backend waits for the
+	// app-server to acknowledge turn/interrupt and emit turn/completed after a
+	// task is cancelled. Zero uses the provider default. A positive override is
+	// useful on slower hosts without coupling cancellation cleanup to the much
+	// longer execution or handshake budgets.
+	TurnInterruptTimeout time.Duration
+	ResumeSessionID      string // if non-empty, resume a previous agent session
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the

@@ -7571,6 +7571,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,
 		HandshakeTimeout:           d.cfg.CodexHandshakeTimeout,
+		TurnInterruptTimeout:       d.cfg.CodexTurnInterruptTimeout,
 		ResumeSessionID:            task.PriorSessionID,
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it

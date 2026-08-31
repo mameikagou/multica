@@ -60,11 +60,14 @@ const (
 	defaultCodexFirstTurnNoProgressTimeout = 60 * time.Second
 	defaultCodexHandshakeTimeout           = 30 * time.Second
 	codexVersionDiagnosticTimeout          = 2 * time.Second
-	// codexTurnInterruptTimeout gives app-server a short, bounded window to
+	// defaultCodexTurnInterruptTimeout gives app-server a short, bounded window to
 	// finish an interrupted turn and report its final token usage before the
 	// process is torn down. This mirrors the native Codex stop flow without
-	// letting a wedged interrupt delay replacement executions indefinitely.
-	codexTurnInterruptTimeout = 2 * time.Second
+	// letting a wedged interrupt delay replacement executions indefinitely. The
+	// value is independently configurable per execution; lifecycle logs record
+	// the observed acknowledgement/completion latency so deployments can tune it
+	// from their own app-server evidence.
+	defaultCodexTurnInterruptTimeout = 2 * time.Second
 	// codexGracefulShutdownTimeout bounds how long the lifecycle goroutine
 	// waits for codex to exit on its own after stdin is closed, before forcing
 	// a context-cancel kill. A clean exit lets codex run its shutdown path and
@@ -1378,6 +1381,11 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				// Kill the whole process group before waiting so a leader that exits
 				// on stdin EOF cannot leave detached-stdio descendants behind.
 				signalProcessGroup(cmd, syscall.SIGKILL)
+			} else if runCtx.Err() != nil {
+				// processCtx deliberately outlives runCtx so active turns can use
+				// turn/interrupt. Initialize has no interruptible turn, so a parent
+				// cancellation must take the fast process-tree cleanup path.
+				stopProcess()
 			}
 			drainAndWait() // flush os/exec stderr goroutine before sampling Tail
 			finalStatus = "failed"
@@ -1417,6 +1425,10 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				// the whole process group before waiting so a leader that exits on
 				// EOF cannot leave detached-stdio descendants behind.
 				signalProcessGroup(cmd, syscall.SIGKILL)
+			} else if runCtx.Err() != nil {
+				// No turn exists during thread start/resume, so there is nothing to
+				// interrupt and no reason to spend the graceful shutdown budget.
+				stopProcess()
 			}
 			drainAndWait() // flush os/exec stderr goroutine before sampling Tail
 			finalStatus = "failed"
@@ -1529,7 +1541,9 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		if err != nil {
 			if runCtx.Err() != nil {
 				finishRunContextDone()
-				interruptCodexTurn(c, threadID, turnDone, b.cfg.Logger)
+				if !interruptCodexTurn(c, threadID, turnDone, opts.TurnInterruptTimeout, b.cfg.Logger) {
+					stopProcess()
+				}
 			} else {
 				select {
 				case aborted := <-turnDone:
@@ -1626,7 +1640,9 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				)
 			case <-runCtx.Done():
 				finishRunContextDone()
-				interruptCodexTurn(c, threadID, turnDone, b.cfg.Logger)
+				if !interruptCodexTurn(c, threadID, turnDone, opts.TurnInterruptTimeout, b.cfg.Logger) {
+					stopProcess()
+				}
 			case <-c.processDone:
 				select {
 				case aborted := <-turnDone:
@@ -2321,41 +2337,51 @@ func codexRequestContextError(ctx context.Context) error {
 }
 
 // interruptCodexTurn follows the app-server's native stop protocol before the
-// cancelled execution tears down its process. turn/completed is where Codex
-// reports final usage, so an immediate process-group SIGKILL loses otherwise
-// valid local token accounting for cancelled/replaced tasks.
-func interruptCodexTurn(c *codexClient, threadID string, turnDone <-chan bool, logger *slog.Logger) {
+// cancelled execution tears down its process. Current app-server versions emit
+// final usage in thread/tokenUsage/updated immediately before turn/completed,
+// so an immediate process-group SIGKILL loses otherwise valid local token
+// accounting for cancelled/replaced tasks. The bool reports whether the turn
+// reached that authoritative completion boundary; callers must force-stop the
+// process tree when it is false.
+func interruptCodexTurn(c *codexClient, threadID string, turnDone <-chan bool, configuredTimeout time.Duration, logger *slog.Logger) bool {
 	select {
 	case <-turnDone:
 		// Completion won the cancellation race; usage has already been captured.
-		return
+		return true
 	default:
 	}
 
 	turnID := c.turnID
 	if threadID == "" || turnID == "" {
-		return
+		return false
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
+	interruptTimeout := configuredTimeout
+	if interruptTimeout <= 0 {
+		interruptTimeout = defaultCodexTurnInterruptTimeout
+	}
+	started := time.Now()
 
-	interruptCtx, cancelInterrupt := context.WithTimeout(context.Background(), codexTurnInterruptTimeout)
+	interruptCtx, cancelInterrupt := context.WithTimeout(context.Background(), interruptTimeout)
 	defer cancelInterrupt()
 	_, err := c.request(interruptCtx, "turn/interrupt", map[string]any{
 		"threadId": threadID,
 		"turnId":   turnID,
 	})
 	if err != nil {
-		logger.Warn("codex turn interrupt failed", "thread_id", threadID, "turn_id", turnID, "error", err)
-		return
+		logger.Warn("codex turn interrupt failed", "thread_id", threadID, "turn_id", turnID, "error", err, "latency", time.Since(started).Round(time.Millisecond).String(), "timeout", interruptTimeout.String())
+		return false
 	}
 
 	select {
 	case <-turnDone:
-		logger.Info("codex turn interrupted", "thread_id", threadID, "turn_id", turnID)
+		logger.Info("codex turn interrupted", "thread_id", threadID, "turn_id", turnID, "latency", time.Since(started).Round(time.Millisecond).String(), "timeout", interruptTimeout.String())
+		return true
 	case <-interruptCtx.Done():
-		logger.Warn("codex turn interrupt completion timed out", "thread_id", threadID, "turn_id", turnID, "timeout", codexTurnInterruptTimeout.String())
+		logger.Warn("codex turn interrupt completion timed out", "thread_id", threadID, "turn_id", turnID, "latency", time.Since(started).Round(time.Millisecond).String(), "timeout", interruptTimeout.String())
+		return false
 	}
 }
 
@@ -3165,6 +3191,9 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 	}
 
 	switch method {
+	case "thread/tokenUsage/updated":
+		c.updateThreadTokenUsage(params)
+
 	case "turn/started":
 		if turnID := extractNestedString(params, "turn", "id"); turnID != "" {
 			c.turnID = turnID
@@ -3340,6 +3369,31 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 			// deliverable, not the authoritative lifecycle boundary.
 		}
 	}
+}
+
+// updateThreadTokenUsage consumes the v2 app-server's real usage notification.
+// tokenUsage.total spans the entire thread, including history on resume;
+// tokenUsage.last is the newly completed model response. Summing each accepted
+// current-turn `last` breakdown therefore captures multi-response tool loops
+// without billing restored history to the new task.
+func (c *codexClient) updateThreadTokenUsage(params map[string]any) {
+	tokenUsage, ok := params["tokenUsage"].(map[string]any)
+	if !ok {
+		return
+	}
+	last, ok := tokenUsage["last"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	inputTokens := codexInt64(last, "inputTokens")
+	cacheReadTokens := codexInt64(last, "cachedInputTokens")
+	c.usageMu.Lock()
+	c.usage.InputTokens += codexUncachedInputTokens(inputTokens, cacheReadTokens)
+	c.usage.OutputTokens += codexInt64(last, "outputTokens") + codexInt64(last, "reasoningOutputTokens")
+	c.usage.CacheReadTokens += cacheReadTokens
+	c.usage.CacheWriteTokens += codexInt64(last, "cacheWriteInputTokens")
+	c.usageMu.Unlock()
 }
 
 func isCodexItemProgressActivity(method string) bool {

@@ -30,6 +30,7 @@ const (
 	DefaultAgentTimeout                   = 0
 	DefaultCodexSemanticInactivityTimeout = 10 * time.Minute
 	DefaultCodexHandshakeTimeout          = 30 * time.Second
+	DefaultCodexTurnInterruptTimeout      = 2 * time.Second
 	// DefaultOpenCodeIdleWatchdog shortens the no-message budget for OpenCode
 	// runs while they are not executing a tool. OpenCode streams text and tool
 	// events incrementally, so a completely silent interval here covers both a
@@ -134,14 +135,19 @@ type Config struct {
 	// for app-servers that are legitimately slow to their first event (GH #3262).
 	CodexFirstTurnNoProgressTimeout time.Duration
 	CodexHandshakeTimeout           time.Duration
-	OpenCodeIdleWatchdog            time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
-	AgentIdleWatchdog               time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
-	AgentToolWatchdog               time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
-	ClaudeArgs                      []string
-	CodexArgs                       []string
-	CodebuddyArgs                   []string
-	QwenArgs                        []string
-	QwenpawArgs                     []string
+	// CodexTurnInterruptTimeout is the bounded grace period after cancellation
+	// for app-server to acknowledge turn/interrupt and emit turn/completed.
+	// Operators can tune it with MULTICA_CODEX_TURN_INTERRUPT_TIMEOUT using the
+	// latency recorded in the Codex lifecycle logs.
+	CodexTurnInterruptTimeout time.Duration
+	OpenCodeIdleWatchdog      time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
+	AgentIdleWatchdog         time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
+	AgentToolWatchdog         time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
+	ClaudeArgs                []string
+	CodexArgs                 []string
+	CodebuddyArgs             []string
+	QwenArgs                  []string
+	QwenpawArgs               []string
 
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
 	// executable path to use for that profile on THIS machine (MUL-3284).
@@ -416,6 +422,13 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if overrides.CodexHandshakeTimeout > 0 {
 		codexHandshakeTimeout = overrides.CodexHandshakeTimeout
 	}
+	codexTurnInterruptTimeout, err := durationFromEnv("MULTICA_CODEX_TURN_INTERRUPT_TIMEOUT", DefaultCodexTurnInterruptTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	if codexTurnInterruptTimeout <= 0 {
+		codexTurnInterruptTimeout = DefaultCodexTurnInterruptTimeout
+	}
 
 	maxConcurrentTasks, err := intFromEnv("MULTICA_DAEMON_MAX_CONCURRENT_TASKS", DefaultMaxConcurrentTasks)
 	if err != nil {
@@ -602,6 +615,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexSemanticInactivityTimeout:  codexSemanticInactivityTimeout,
 		CodexFirstTurnNoProgressTimeout: codexFirstTurnNoProgressTimeout,
 		CodexHandshakeTimeout:           codexHandshakeTimeout,
+		CodexTurnInterruptTimeout:       codexTurnInterruptTimeout,
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentToolWatchdog:               agentToolWatchdog,
