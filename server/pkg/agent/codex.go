@@ -1827,14 +1827,17 @@ func (c *codexClient) startOrResumeThread(ctx context.Context, opts ExecOptions,
 		// thread/resume reuses the thread's persisted model and reasoning
 		// effort; only override fields the daemon actually cares about.
 		// Native-cwd runs cannot place a generated AGENTS.md in the user's
-		// directory, so their runtime brief travels as developer instructions.
-		// Managed workdirs leave SystemPrompt empty and preserve the historical
-		// nil field.
+		// directory, so their runtime brief normally travels as developer
+		// instructions. A caller that knows the resumed thread already carries
+		// the stable brief may omit that override; a fallback thread/start below
+		// still receives it for cold-start safety.
 		resumeParams := map[string]any{
-			"threadId":              priorThreadID,
-			"cwd":                   opts.Cwd,
-			"model":                 nilIfEmpty(opts.Model),
-			"developerInstructions": nilIfEmpty(opts.SystemPrompt),
+			"threadId": priorThreadID,
+			"cwd":      opts.Cwd,
+			"model":    nilIfEmpty(opts.Model),
+		}
+		if !opts.OmitSystemPromptOnResume {
+			resumeParams["developerInstructions"] = nilIfEmpty(opts.SystemPrompt)
 		}
 		// Explicit override of the persisted reasoning effort: without
 		// this, a Codex resume silently reuses whatever level the prior

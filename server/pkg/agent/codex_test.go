@@ -2080,6 +2080,82 @@ func TestCodexThreadResumeForwardsNativeRuntimeBrief(t *testing.T) {
 	}
 }
 
+func TestCodexThreadResumeCanOmitNativeRuntimeBrief(t *testing.T) {
+	t.Parallel()
+
+	c, fs, _ := newTestCodexClient(t)
+
+	wait := drainRPCScript(t, c, fs, []rpcResponse{
+		{
+			method: "thread/resume",
+			result: json.RawMessage(`{"thread":{"id":"thr_prior"}}`),
+			assertFn: func(t *testing.T, params map[string]any) {
+				t.Helper()
+				if _, ok := params["developerInstructions"]; ok {
+					t.Errorf("developerInstructions must be omitted on the resumed private-chat path, got %v", params["developerInstructions"])
+				}
+			},
+		},
+	})
+	defer wait()
+
+	if _, _, err := c.startOrResumeThread(
+		context.Background(),
+		ExecOptions{
+			Cwd:                      "/work",
+			ResumeSessionID:          "thr_prior",
+			SystemPrompt:             codexRuntimeBriefCanary,
+			OmitSystemPromptOnResume: true,
+		},
+		slog.Default(),
+	); err != nil {
+		t.Fatalf("startOrResumeThread: %v", err)
+	}
+}
+
+func TestCodexThreadResumeOmissionKeepsBriefOnFreshFallback(t *testing.T) {
+	t.Parallel()
+
+	c, fs, _ := newTestCodexClient(t)
+
+	wait := drainRPCScript(t, c, fs, []rpcResponse{
+		{
+			method:  "thread/resume",
+			errMsg:  "unknown thread",
+			errCode: -32602,
+			assertFn: func(t *testing.T, params map[string]any) {
+				t.Helper()
+				if _, ok := params["developerInstructions"]; ok {
+					t.Errorf("developerInstructions must be omitted from thread/resume, got %v", params["developerInstructions"])
+				}
+			},
+		},
+		{
+			method:   "thread/start",
+			result:   json.RawMessage(`{"thread":{"id":"thr_new"}}`),
+			assertFn: assertDeveloperInstructions(codexRuntimeBriefCanary),
+		},
+	})
+	defer wait()
+
+	threadID, resumed, err := c.startOrResumeThread(
+		context.Background(),
+		ExecOptions{
+			Cwd:                      "/work",
+			ResumeSessionID:          "thr_stale",
+			SystemPrompt:             codexRuntimeBriefCanary,
+			OmitSystemPromptOnResume: true,
+		},
+		slog.Default(),
+	)
+	if err != nil {
+		t.Fatalf("startOrResumeThread: %v", err)
+	}
+	if threadID != "thr_new" || resumed {
+		t.Fatalf("fallback result = (%q, %v), want (thr_new, false)", threadID, resumed)
+	}
+}
+
 func TestCodexThreadStartKeepsDeveloperInstructionsNilByDefault(t *testing.T) {
 	t.Parallel()
 	c, fs, _ := newTestCodexClient(t)

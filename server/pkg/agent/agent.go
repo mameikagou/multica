@@ -71,6 +71,11 @@ type ExecOptions struct {
 	// session metadata into every successful follow-up turn. Empty preserves the
 	// ordinary prompt. Currently honoured by the Codex backend.
 	ResumedPrompt string
+	// OmitSystemPromptOnResume prevents the Codex backend from re-sending the
+	// caller-supplied SystemPrompt as a thread/resume configuration override.
+	// It only affects a resume attempt: a fresh thread/start, including fallback
+	// after a rejected resume, still receives SystemPrompt for cold-start safety.
+	OmitSystemPromptOnResume bool
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the

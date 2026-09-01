@@ -7609,7 +7609,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	prompt := BuildPrompt(task, provider, promptOptions...)
 	resumedPrompt := ""
-	if provider == "codex" && task.ChatSessionID != "" && task.ChatChannelType == "" && !task.ChatIntro {
+	useResumedWebDirectPrompt := provider == "codex" && task.ChatSessionID != "" && task.ChatChannelType == "" && !task.ChatIntro
+	if useResumedWebDirectPrompt {
 		resumedPrompt = buildResumedWebDirectPrompt(task, promptOptions...)
 	}
 
@@ -7839,6 +7840,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ThreadHandshakeTimeout:     d.cfg.CodexThreadHandshakeTimeout,
 		ResumeSessionID:            task.PriorSessionID,
 		ResumedPrompt:              resumedPrompt,
+		OmitSystemPromptOnResume:   useResumedWebDirectPrompt,
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it
 		// survived to here, the backend must disclose the loss when the live
