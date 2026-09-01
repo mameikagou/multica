@@ -640,56 +640,9 @@ func buildChatPrompt(task Task) string {
 		fmt.Fprintf(&b, "Reply to %s with the final outcome only. Do NOT narrate planned or in-progress steps (\"我先读取…\"); completed actions are part of the outcome.\n", platform)
 		b.WriteString("\n")
 	}
-	if task.Agent != nil && len(task.Agent.Skills) > 0 {
-		refs := ExtractSlashSkills(task.ChatMessage)
-		if len(refs) > 0 {
-			agentSkills := make(map[string]string, len(task.Agent.Skills))
-			for _, s := range task.Agent.Skills {
-				agentSkills[s.ID] = s.Name
-			}
-
-			selected := make([]string, 0, len(refs))
-			seen := make(map[string]struct{}, len(refs))
-			for _, ref := range refs {
-				name, ok := agentSkills[ref.ID]
-				if !ok {
-					continue
-				}
-				if _, ok := seen[ref.ID]; ok {
-					continue
-				}
-				seen[ref.ID] = struct{}{}
-				selected = append(selected, name)
-			}
-
-			if len(selected) > 0 {
-				b.WriteString("Explicitly selected skills:\n")
-				for _, name := range selected {
-					fmt.Fprintf(&b, "- %s\n", name)
-				}
-				b.WriteString("\n")
-			}
-		}
-	}
+	writeExplicitChatSkills(&b, task)
 	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
-	// List attachments by id + filename so the agent can fetch them via
-	// the CLI. We deliberately do NOT inline the URL: chat attachments
-	// live behind a signed CDN with a short TTL, so by the time the agent
-	// has finished thinking the URL embedded in the markdown body may
-	// have expired. `multica attachment download <id>` re-signs at click
-	// time and is the only reliable path.
-	if len(task.ChatMessageAttachments) > 0 {
-		b.WriteString("\nAttachments on this message:\n")
-		for _, a := range task.ChatMessageAttachments {
-			if a.ContentType != "" {
-				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s\n", a.ID, a.Filename, a.ContentType)
-			} else {
-				fmt.Fprintf(&b, "- id=%s filename=%q\n", a.ID, a.Filename)
-			}
-		}
-		b.WriteString("Use `multica attachment download <id>` to fetch each file locally before referring to it.\n")
-		b.WriteString("When creating an issue that should preserve one of these attachments, pass `--attachment-id <id>` to `multica issue create` in addition to keeping the attachment markdown inline.\n")
-	}
+	writeInboundChatAttachments(&b, task)
 	// Outbound attachments: how the agent puts an image/file INTO its reply.
 	// This is the DELIVERY layer of the channel policy, and it has three
 	// answers, not two (MUL-4899). `attachment upload` binds a file to the
@@ -717,6 +670,118 @@ func buildChatPrompt(task Task) string {
 		fmt.Fprintf(&b, "\nThis reply is delivered to %s as text. You cannot attach a file to it: `multica attachment upload` binds to a Multica chat reply, which this is not. If you produce a file, describe it in words — never write its local path as a link, and never upload it and then write as though it arrived.\n", channelDisplayName(task.ChatChannelType))
 	}
 	return b.String()
+}
+
+func writeExplicitChatSkills(b *strings.Builder, task Task) {
+	if task.Agent != nil && len(task.Agent.Skills) > 0 {
+		refs := ExtractSlashSkills(task.ChatMessage)
+		if len(refs) > 0 {
+			agentSkills := make(map[string]string, len(task.Agent.Skills))
+			for _, s := range task.Agent.Skills {
+				agentSkills[s.ID] = s.Name
+			}
+
+			selected := make([]string, 0, len(refs))
+			seen := make(map[string]struct{}, len(refs))
+			for _, ref := range refs {
+				name, ok := agentSkills[ref.ID]
+				if !ok {
+					continue
+				}
+				if _, ok := seen[ref.ID]; ok {
+					continue
+				}
+				seen[ref.ID] = struct{}{}
+				selected = append(selected, name)
+			}
+
+			if len(selected) > 0 {
+				b.WriteString("Explicitly selected skills:\n")
+				for _, name := range selected {
+					fmt.Fprintf(b, "- %s\n", name)
+				}
+				b.WriteString("\n")
+			}
+		}
+	}
+	return
+}
+
+func writeInboundChatAttachments(b *strings.Builder, task Task) {
+	// List attachments by id + filename so the agent can fetch them via
+	// the CLI. We deliberately do NOT inline the URL: chat attachments
+	// live behind a signed CDN with a short TTL, so by the time the agent
+	// has finished thinking the URL embedded in the markdown body may
+	// have expired. `multica attachment download <id>` re-signs at click
+	// time and is the only reliable path.
+	if len(task.ChatMessageAttachments) > 0 {
+		b.WriteString("\nAttachments on this message:\n")
+		for _, a := range task.ChatMessageAttachments {
+			if a.ContentType != "" {
+				fmt.Fprintf(b, "- id=%s filename=%q content_type=%s\n", a.ID, a.Filename, a.ContentType)
+			} else {
+				fmt.Fprintf(b, "- id=%s filename=%q\n", a.ID, a.Filename)
+			}
+		}
+		b.WriteString("Use `multica attachment download <id>` to fetch each file locally before referring to it.\n")
+		b.WriteString("When creating an issue that should preserve one of these attachments, pass `--attachment-id <id>` to `multica issue create` in addition to keeping the attachment markdown inline.\n")
+	}
+}
+
+// buildResumedWebDirectPrompt is the confirmed-resume input for creator-only
+// web/mobile chats. The original thread already carries its audience,
+// initiator, Multica role and outbound-delivery capability, so replaying those
+// stable facts on every turn only pollutes the transcript. Keep only the new
+// message plus genuinely turn-scoped data.
+func buildResumedWebDirectPrompt(task Task, options ...PromptOption) string {
+	var opts promptOpts
+	for _, apply := range options {
+		apply(&opts)
+	}
+
+	var b strings.Builder
+	writeExplicitChatSkills(&b, task)
+	b.WriteString(task.ChatMessage)
+	writeInboundChatAttachments(&b, task)
+
+	var blocks strings.Builder
+	blocks.WriteString(buildSharedLocalDirectoryBlock(opts.sharedLocalDirectory))
+	blocks.WriteString(buildWorktreeReplayConflictBlock(opts.worktreeReplayConflicts))
+	if task.PriorSessionResumeUnavailable {
+		blocks.WriteString(sessionContinuityNoticeFor(task))
+	}
+	blocks.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
+	if extra := blocks.String(); extra != "" {
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(extra)
+	}
+	return b.String()
+}
+
+// buildTaskExecutionPrompt selects the prompt sent to every provider. A
+// resumed creator-only web/mobile chat gets only its new turn data; all other
+// executions keep BuildPrompt's full surface and runtime context.
+func buildTaskExecutionPrompt(task Task, provider string, options ...PromptOption) string {
+	if shouldUseResumedWebDirectPrompt(task) {
+		return buildResumedWebDirectPrompt(task, options...)
+	}
+	return BuildPrompt(task, provider, options...)
+}
+
+// shouldUseResumedWebDirectPrompt limits the compact follow-up to resumed chats
+// on Multica's creator-only web/mobile surface. Channel-backed conversations
+// keep their per-turn audience and delivery instructions, including p2p rooms.
+// A first turn has no prior session ID and keeps the full prompt. If a provider
+// rejects the resume, runTask clears that ID and rebuilds the full prompt for
+// its existing one-shot fresh-session retry.
+func shouldUseResumedWebDirectPrompt(task Task) bool {
+	return task.ChatSessionID != "" &&
+		task.PriorSessionID != "" &&
+		task.ChatChannelType == "" &&
+		execenv.AudienceOf(task.ChatChannelType, task.ChatType) == execenv.ChatAudienceDirect &&
+		!task.ChatIntro
 }
 
 // channelDisplayName renders a chat_channel_type for prompt copy. The mapping

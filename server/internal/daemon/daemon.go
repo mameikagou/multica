@@ -7774,7 +7774,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env.LocalWorktree != nil && len(env.LocalWorktree.ReplayConflicts) > 0 {
 		promptOptions = append(promptOptions, WithWorktreeReplayConflicts(env.LocalWorktree.ReplayConflicts))
 	}
-	prompt := BuildPrompt(task, provider, promptOptions...)
+	prompt := buildTaskExecutionPrompt(task, provider, promptOptions...)
 
 	// Pass task-scoped auth credentials and context so the spawned agent CLI
 	// can call the Multica API and the local daemon (e.g. `multica repo checkout`).
@@ -8144,7 +8144,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				execOpts.SystemPrompt = runtimeBrief
 			}
 		}
-		freshPrompt := BuildPrompt(task, provider, promptOptions...)
+		freshPrompt := buildTaskExecutionPrompt(task, provider, promptOptions...)
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {

@@ -897,6 +897,180 @@ func TestBuildChatPromptAudience(t *testing.T) {
 	}
 }
 
+func TestBuildResumedWebDirectPromptOnlySendsTurnDelta(t *testing.T) {
+	t.Parallel()
+
+	const message = "你的工作目录是？"
+	got := buildResumedWebDirectPrompt(Task{
+		ChatSessionID:  "chat-1",
+		ChatMessage:    message,
+		InitiatorType:  "member",
+		InitiatorName:  "mrlonely1226",
+		InitiatorEmail: "mrlonely1226@outlook.com",
+	})
+	if got != message {
+		t.Fatalf("resumed web direct prompt = %q, want raw user message %q", got, message)
+	}
+	for _, stale := range []string{
+		"You are running as a chat assistant",
+		"Audience: direct room",
+		"User message:",
+		"multica attachment upload",
+		"## Task Initiator",
+		"mrlonely1226@outlook.com",
+	} {
+		if strings.Contains(got, stale) {
+			t.Errorf("resumed web direct prompt replayed stable context %q\n---\n%s", stale, got)
+		}
+	}
+}
+
+func TestBuildResumedWebDirectPromptKeepsTurnScopedContext(t *testing.T) {
+	t.Parallel()
+
+	got := buildResumedWebDirectPrompt(Task{
+		ChatSessionID: "chat-1",
+		ChatMessage:   "看下这个截图",
+		ChatMessageAttachments: []ChatAttachmentMeta{{
+			ID:          "attachment-1",
+			Filename:    "screen.png",
+			ContentType: "image/png",
+		}},
+		ConnectedApps: []ConnectedAppData{{
+			Provider:    "composio",
+			ServerName:  "composio",
+			ToolkitSlug: "notion",
+			ToolkitName: "Notion",
+		}},
+	})
+	for _, want := range []string{
+		"看下这个截图",
+		"id=attachment-1",
+		"filename=\"screen.png\"",
+		"multica attachment download",
+		"## Connected Apps",
+		"Notion",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("resumed web direct prompt lost turn-scoped context %q\n---\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "multica attachment upload") {
+		t.Errorf("resumed web direct prompt replayed stable outbound upload tutorial\n---\n%s", got)
+	}
+}
+
+func TestBuildResumedWebDirectPromptKeepsWorktreeConflictContext(t *testing.T) {
+	t.Parallel()
+
+	got := buildResumedWebDirectPrompt(
+		Task{ChatSessionID: "chat-1", ChatMessage: "继续"},
+		WithWorktreeReplayConflicts([]string{"parser/parse.go"}),
+	)
+	for _, want := range []string{
+		"继续",
+		"## Unresolved merge in your working tree",
+		`"parser/parse.go"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("resumed web direct prompt lost worktree conflict context %q\n---\n%s", want, got)
+		}
+	}
+}
+
+func TestShouldUseResumedWebDirectPrompt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		task Task
+		want bool
+	}{
+		{
+			name: "resumed web direct chat",
+			task: Task{ChatSessionID: "chat-1", PriorSessionID: "session-1"},
+			want: true,
+		},
+		{
+			name: "first turn",
+			task: Task{ChatSessionID: "chat-1"},
+		},
+		{
+			name: "channel-backed p2p chat",
+			task: Task{
+				ChatSessionID:   "chat-1",
+				PriorSessionID:  "session-1",
+				ChatChannelType: execenv.ChannelTypeFeishu,
+				ChatType:        execenv.ChatTypeP2P,
+			},
+		},
+		{
+			name: "group chat",
+			task: Task{
+				ChatSessionID:  "chat-1",
+				PriorSessionID: "session-1",
+				ChatType:       execenv.ChatTypeGroup,
+			},
+		},
+		{
+			name: "intro turn",
+			task: Task{ChatSessionID: "chat-1", PriorSessionID: "session-1", ChatIntro: true},
+		},
+		{
+			name: "non-chat task",
+			task: Task{PriorSessionID: "session-1"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shouldUseResumedWebDirectPrompt(tc.task); got != tc.want {
+				t.Fatalf("shouldUseResumedWebDirectPrompt() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildTaskExecutionPromptUsesPrivateChatDeltaForEveryProvider(t *testing.T) {
+	t.Parallel()
+
+	task := Task{
+		ChatSessionID:  "chat-1",
+		PriorSessionID: "session-1",
+		ChatMessage:    "只保留这条消息",
+		InitiatorName:  "stable-initiator",
+	}
+	for _, provider := range []string{"codex", "claude", "pi", "cursor", "future-provider"} {
+		provider := provider
+		t.Run(provider, func(t *testing.T) {
+			t.Parallel()
+			if got := buildTaskExecutionPrompt(task, provider); got != task.ChatMessage {
+				t.Fatalf("resumed private-chat prompt for %s = %q, want raw message %q", provider, got, task.ChatMessage)
+			}
+		})
+	}
+}
+
+func TestBuildTaskExecutionPromptKeepsFullContextWithoutPriorSession(t *testing.T) {
+	t.Parallel()
+
+	got := buildTaskExecutionPrompt(Task{
+		ChatSessionID: "chat-1",
+		ChatMessage:   "第一轮",
+	}, "claude")
+	for _, want := range []string{
+		"You are running as a chat assistant",
+		"Audience: direct room",
+		"User message:\n第一轮",
+		"multica attachment upload",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("fresh private-chat prompt missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
 func TestBuildChatPromptAgentIntro(t *testing.T) {
 	// Historical proactive-introduction sessions remain readable even though
 	// new agent creation no longer creates one. Their message-less first turn
