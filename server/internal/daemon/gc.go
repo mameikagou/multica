@@ -872,12 +872,17 @@ func (d *Daemon) gcTaskDirOwner(taskDir string) (*execenv.EnvRootOwner, error) {
 // reclaimed bytes, and returns that count for the cycle summary. A failed or
 // refused removal reports removed=false.
 func (d *Daemon) cleanTaskDir(taskDir string) (bytes int64, removed bool) {
+	// Measure first, prove ownership second. dirSize walks the entire tree,
+	// which on a large task directory takes long enough for the validated
+	// directory to be replaced underneath us — checking before that walk would
+	// hand RemoveAll a path last proven ours tens of seconds earlier. This is
+	// the defense-in-depth check, so it sits immediately before the removal.
+	bytes = dirSize(taskDir)
 	owner, ownerErr := d.gcTaskDirOwner(taskDir)
 	if ownerErr != nil {
 		d.logger.Warn("gc: refusing to remove unowned task directory", "dir", taskDir, "error", ownerErr)
 		return 0, false
 	}
-	bytes = dirSize(taskDir)
 	if err := os.RemoveAll(taskDir); err != nil {
 		d.logger.Warn("gc: remove task dir failed", "dir", taskDir, "error", err)
 		return 0, false
