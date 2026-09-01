@@ -31,7 +31,7 @@
 
 ## 已被上游合并的贡献
 
-截至 2026-09-01，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 5 个 PR 已全部正式合并（日期按 GitHub UTC）：
+截至 2026-09-01，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 6 个 PR 已全部正式合并（日期按 GitHub UTC）：
 
 | PR | 上游获得的能力 | 合并日期 |
 | --- | --- | --- |
@@ -40,6 +40,7 @@
 | [#7756 · explicit Codex Standard speed](https://github.com/multica-ai/multica/pull/7756) | 区分“继承本地配置”、“明确 Standard”与“Fast”，支持本地默认 Fast 时主动切回 Standard | 2026-09-01 |
 | [#7760 · Pi session continuity](https://github.com/multica-ai/multica/pull/7760) | Pi/OMP 使用独立 JSONL session 时不再被 workdir 变化错误阻断恢复 | 2026-08-31 |
 | [#7790 · Codex thread handshake budget](https://github.com/multica-ai/multica/pull/7790) | 为 `thread/start` / `thread/resume` 设置独立的 60 秒默认预算，轻量 RPC 继续保持 30 秒 | 2026-08-31 |
+| [#7798 · require proven task ownership before GC mutation](https://github.com/multica-ai/multica/pull/7798) | GC 修改磁盘前必须先用 `.task_owner` 证明目录由 Multica 创建，普通目录不会再因为够旧或缺少完成信息就被递归删除。这项修复来自一次误删 20 GB 以上文件的真实事故，把“无法确认归属”改成保留目录，而不是猜测删除。 | 2026-09-01 |
 
 PR 已合并后，所有上游用户都能使用这些通用修复。fork 无需把它们当作独占卖点。上表记录作者的上游贡献；当前分支按网关模式的相关性选择要显式整合的 merge commit，其余改动在下次 mainline sync 时吸收。
 
