@@ -557,6 +557,62 @@ func TestRunGC_SharedRootPreservesForeignDirectories(t *testing.T) {
 	}
 }
 
+// The incident regression above only proves the no-meta orphan path returns
+// early. applyGCAction is the single gate every mutating action passes
+// through, so pin all four: an unowned directory must survive full cleanup,
+// orphan removal, pattern artifact cleanup and managed artifact cleanup alike.
+func TestApplyGCAction_RefusesEveryMutationWithoutOwner(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		action gcAction
+	}{
+		{"clean", gcActionClean},
+		{"orphan", gcActionOrphan},
+		{"artifacts", gcActionCleanArtifacts},
+		{"managed artifacts", gcActionCleanManagedArtifacts},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := newGCTestDaemon(t, http.NewServeMux())
+			taskDir := filepath.Join(d.cfg.WorkspacesRoot, "source-repository", "data")
+			// Give both artifact actions something they would delete if the
+			// ownership gate were absent, so a passing test means refusal
+			// rather than an empty fixture.
+			artifactDir := filepath.Join(taskDir, d.cfg.GCArtifactPatterns[0])
+			managedDir := filepath.Join(taskDir, execenv.ManagedReclaimableArtifactSubpaths()[0])
+			for _, dir := range []string{artifactDir, managedDir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "payload"), []byte("keep"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			database := filepath.Join(taskDir, "research.sqlite")
+			if err := os.WriteFile(database, []byte("do not delete"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			stats := &gcStats{byPattern: map[string]int{}}
+			if removed := d.applyGCAction(taskDir, tc.action, stats); removed != 0 {
+				t.Fatalf("applyGCAction reported %d removals on an unowned directory", removed)
+			}
+			if stats.cleaned != 0 || stats.orphaned != 0 || stats.artifactDirs != 0 || stats.bytesReclaimed != 0 {
+				t.Fatalf("unowned mutation was counted: cleaned=%d orphaned=%d artifactDirs=%d bytes=%d",
+					stats.cleaned, stats.orphaned, stats.artifactDirs, stats.bytesReclaimed)
+			}
+			for _, path := range []string{database, filepath.Join(artifactDir, "payload"), filepath.Join(managedDir, "payload")} {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("unowned content was mutated: %s: %v", path, err)
+				}
+			}
+		})
+	}
+}
+
 func TestCleanTaskDir_RefusesOwnerPathMismatch(t *testing.T) {
 	t.Parallel()
 
