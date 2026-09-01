@@ -2,7 +2,7 @@
 
 # Multica Gateway Fork
 
-**把 Multica 当作多 Agent 聚合网关，而不是工作流框架。**
+**一个不接管用户工作流的多 Agent 聚合网关。**
 
 [个人维护分支](https://github.com/mameikagou/multica/tree/local/native-context-chat-handoff) ·
 [上游项目](https://github.com/multica-ai/multica) ·
@@ -15,17 +15,24 @@
 
 ## 这条维护分支的价值
 
-这不是一个“比上游多几个开关”的补丁堆，而是一个长期维护的 **Agent 网关发行版**：它保留 Multica 作为多端入口和运行时调度器的价值，同时把工作目录、会话、Prompt、Skill 和代码目录的最终控制权交还给用户和 Agent。
+这是一个长期维护的 **Agent 网关发行版**。它保留 Multica 作为多端入口和运行时调度器的价值，同时把工作目录、会话、Prompt、Skill 和代码目录的最终控制权交还给用户和 Agent。它的价值来自一套可长期使用的边界，不靠堆叠开关。
 
 > [!NOTE]
-> **上游默认提供的是“受管任务工作流”，不是中性网关。** Agent 默认进入 Multica 生成的 task workdir，而不是用户真正的代码根目录；平台还会向运行目录写入 sidecar，并向模型注入 Workflow 和 Skill 激活规则。这适合希望 Multica 全面管理任务的团队，但会打乱已有成熟本地工作流的用户。
+> **上游默认提供受管任务工作流。** Agent 默认进入 Multica 生成的 task workdir；用户真正的代码根目录没有成为实际 cwd。平台还会向运行目录写入 sidecar，并向模型注入 Workflow 和 Skill 激活规则。这套设计适合希望 Multica 全面管理任务的团队，但会打乱已有成熟本地工作流的用户。
+>
+> GPT-5.6 Sol、Claude Fable 5 和 Claude Opus 5 这类 SOTA（当前能力最强的一档）模型已经能自行规划、调用工具、拆分任务并根据执行结果调整做法。继续强加一套固定 Workflow，往往会变成 Superpowers（向编码 Agent 强制加入计划、测试、调试等流程的 Skill 包）一样的枷锁。它迫使模型在每个 turn 重复扫描和执行已经具备的能力，额外消耗 token，也会降低实际任务表现：过度规划、调用无关 Skill、重复验证、陷入循环，最后把简单修改做得更慢、更复杂。
+
+两条 Codex 用户记录展示了这类失败模式：
+
+- [用户删除 Superpowers 后，异常 token 消耗停止](https://www.reddit.com/r/OpenaiCodex/comments/1v3mt8k/burned_4_of_my_weekly_limit_just_by_pushing_and/)；
+- [GPT-5.6 Codex 用户讨论：多人因 token 消耗、过度思考和质量下降而停用 Superpowers](https://www.reddit.com/r/codex/comments/1uzbpec/does_superpowers_suck_with_56_and_just_eat_tokens/)。
+
+证据边界：这些链接记录了用户观察，没有提供受控基准测试。它们证明这个风险已经在真实 Codex 工作流中出现，也说明为什么本分支把 Workflow 和 Skill 的触发权交还给用户和模型。
 
 - **官方客户端，自维护网关。** Web、Desktop 和 Mobile 可以继续跟随官方版本；本机只需替换同一个 Go CLI/daemon，不需要 fork 整个客户端才能获得核心体验。
-- **Agent 直接在真正的代码根目录工作。** 上游默认把工作位置固定为 Multica 生成的 task workdir，cwd 和项目发现因此受平台目录布局控制，而不是用户明确选择的代码根目录。本分支的通用 `native_workdir` 让 Codex、Claude Code、Cursor、Pi 等 Agent/Harness 从用户指定的真实 cwd 启动，保留 provider 原生的项目发现、Git 上下文和本地规则。
 - **Multica 不再向代码目录写入 sidecar。** 上游运行模式可能写入或改写 `AGENTS.md`、`CLAUDE.md`、`.agent_context/`、`reasonix.toml`、`.cursor/mcp.json` 等运行说明和项目 MCP 配置。native 模式不向 cwd 写这些 Multica runtime sidecar；日志、凭证、provider home 和 task scratch 全部保持在独立的私有状态目录。
 - **连续会话，不用平台工作流换取历史。** Codex thread 和 Pi/OMP session 不再因 workdir 变化、取消 turn 或追加消息轻易冷启动；Web 私聊恢复后只发送新增消息，不在每个 turn 重放稳定的平台套话。
 - **Workflow 和 Skill 不再默认接管模型。** 上游完整 Prompt 会重复强调 issue/comment 工作流、CLI 使用和 Skill 激活规则；“匹配就调用”会让模型过度敏感，容易启动与当前任务无关的 Skill，同时持续消耗上下文。本分支的 `minimal` 只保留必要环境事实和中性 Skill 清单，**可见不等于必须触发**；`off` 移除 Multica 运行时工作流和服务端 Skill，`full` 才保留官方完整行为。
-- **把用户代码与可回收 workspace 分开。** daemon 的 GC 只能修改能证明归属于 Multica task 的受管路径；`native_workdir` 不会被当成可丢弃的 task workspace。
 - **通用修复回馈上游，个人取舍留在 fork。** 可复用的协议、会话和 CLI 修复会拆成独立 PR 提交给 Multica；“网关而非工作流”这种明确带有个人偏好的组合仍由本分支维护。
 
 ## 已被上游合并的贡献
@@ -40,7 +47,7 @@
 | [#7760 · Pi session continuity](https://github.com/multica-ai/multica/pull/7760) | Pi/OMP 使用独立 JSONL session 时不再被 workdir 变化错误阻断恢复 | 2026-08-31 |
 | [#7790 · Codex thread handshake budget](https://github.com/multica-ai/multica/pull/7790) | 为 `thread/start` / `thread/resume` 设置独立的 60 秒默认预算，轻量 RPC 继续保持 30 秒 | 2026-08-31 |
 
-PR 已合并意味着这些通用修复不再是 fork 独占卖点，而是所有上游用户都能受益。上表是作者的上游贡献记录，不等于当前分支逐个 cherry-pick 了每个 merge commit；维护分支只显式整合与网关模式直接相关的改动，其余在下次 mainline sync 时吸收。
+PR 已合并后，所有上游用户都能使用这些通用修复。fork 无需把它们当作独占卖点。上表记录作者的上游贡献；当前分支按网关模式的相关性选择要显式整合的 merge commit，其余改动在下次 mainline sync 时吸收。
 
 本分支的持续价值在于：将通用上游能力与 native cwd、低侵入上下文、严格的目录归属边界和追加消息交接组合成一套可直接日常使用的网关模式。
 
@@ -198,7 +205,7 @@ go build \
 ln -sfn "$GATEWAY_BIN" "$HOME/.local/bin/multica"
 ```
 
-使用版本化文件而不是直接覆盖正在运行的可执行文件，可以避免 Desktop/daemon 仍持有旧 inode，也方便快速回滚。
+使用版本化文件可以避免直接覆盖正在运行的可执行文件，也能防止 Desktop/daemon 继续持有旧 inode，方便快速回滚。
 
 ### 4. 配置网关模式
 
@@ -315,7 +322,7 @@ multica --profile <profile> daemon restart
 
 ## 明确的取舍
 
-- 所有普通任务共享同一个 `native_workdir`，本分支不会额外加写锁。这是有意设计：由用户决定哪些会话可以并发，而不是让网关猜测任务是否冲突。
+- 所有普通任务共享同一个 `native_workdir`，本分支不会额外加写锁。用户决定哪些会话可以并发；网关不猜测任务是否冲突。
 - Agent 以 daemon 所属系统用户的权限直接操作代码目录。这个分支优化的是工作流边界，不提供额外文件系统沙箱。
 - `minimal` 降低平台提示词和误触发概率，但模型仍可能根据 Skill 自身过宽的描述主动选择它；真正零平台 Skill 使用应选择 `off`，或收紧相应 Skill 自身的说明。
 - 连接官方 Multica Cloud 时，本地 fork 只能控制 daemon 侧行为；服务端和前端改动必须等上游部署，或使用完整自建模式。
