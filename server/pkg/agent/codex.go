@@ -65,7 +65,12 @@ const (
 	// letting a wedged interrupt delay replacement executions indefinitely. The
 	// value is independently configurable per execution; lifecycle logs record
 	// the observed acknowledgement/completion latency so deployments can tune it
-	// from their own app-server evidence.
+	// from their own app-server evidence. On 2026-09-01, the reproducible real-
+	// agent probe in codex_interrupt_latency_integration_test.go measured 20
+	// interrupted generations and 20 interrupted active tools on WSL/Linux with
+	// codex-cli 0.147.0: turn/completed P99/max were 15ms/15ms and 13ms/13ms.
+	// Two seconds deliberately keeps more than 130x headroom over the observed
+	// worst protocol completion for host load and cross-platform scheduling.
 	defaultCodexTurnInterruptTimeout = 2 * time.Second
 	// thread/start and thread/resume may refresh the model catalog, initialize
 	// MCP integrations, and restore persisted history. Field evidence shows
