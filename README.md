@@ -11,28 +11,22 @@
 </div>
 
 > [!IMPORTANT]
-> 这是 `multica-ai/multica` 的个人发行分支，不是官方版本。它保留 Multica 优秀的传输、路由、运行时注册、聊天界面、执行日志和用量统计能力，同时尽量不接管 Codex、Claude Code、Cursor、Pi 等 Agent/Harness 原本的工作方式。
+> 这是 `multica-ai/multica` 的个人发行分支。它保留 Multica 优秀的传输、路由、运行时注册、聊天界面、执行日志和用量统计能力，同时尽量不接管 Codex、Claude Code、Cursor、Pi 等 Agent/Harness 原本的工作方式。
 
 ## 这条维护分支的价值
 
 这是一个长期维护的 **Agent 网关发行版**。它保留 Multica 作为多端入口和运行时调度器的价值，同时把工作目录、会话、Prompt、Skill 和代码目录的最终控制权交还给用户和 Agent。它的价值来自一套可长期使用的边界，不靠堆叠开关。
 
 > [!NOTE]
-> **上游默认提供受管任务工作流。** Agent 默认进入 Multica 生成的 task workdir；用户真正的代码根目录没有成为实际 cwd。平台还会向运行目录写入 sidecar，并向模型注入 Workflow 和 Skill 激活规则。这套设计适合希望 Multica 全面管理任务的团队，但会打乱已有成熟本地工作流的用户。
+> **上游默认提供受管任务工作流。** 平台会向运行目录写入 sidecar垃圾文件，并向模型注入 Workflow 和 Skill 激活规则。这套设计适合AI native 程序不高，希望通过 Multica 推动 AI 更全面普及的团队，但对已有成熟本地工作流的用户是一种打扰。
 >
-> GPT-5.6 Sol、Claude Fable 5 和 Claude Opus 5 这类 SOTA（当前能力最强的一档）模型已经能自行规划、调用工具、拆分任务并根据执行结果调整做法。继续强加一套固定 Workflow，往往会变成 Superpowers（向编码 Agent 强制加入计划、测试、调试等流程的 Skill 包）一样的枷锁。它迫使模型在每个 turn 重复扫描和执行已经具备的能力，额外消耗 token，也会降低实际任务表现：过度规划、调用无关 Skill、重复验证、陷入循环，最后把简单修改做得更慢、更复杂。
+> GPT-5.6 Sol、Claude Fable 5 和 Claude Opus 5 这类 SOTA（当前能力最强的一档）模型已经能自行规划、调用工具、拆分任务并根据执行结果调整做法。继续强加一套固定 Workflow，往往会变成 Superpowers skill一样的枷锁。它迫使模型在每个 turn 重复扫描和执行已经具备的能力，额外消耗 token，也会降低实际任务表现：过度规划、调用无关 Skill、重复验证、陷入循环，最后把简单修改做得更慢、更复杂。[用户删除 Superpowers 后，异常 token 消耗停止](https://www.reddit.com/r/OpenaiCodex/comments/1v3mt8k/burned_4_of_my_weekly_limit_just_by_pushing_and/)；
+[GPT-5.6 Codex 用户讨论：多人因 token 消耗、过度思考和质量下降而停用 Superpowers](https://www.reddit.com/r/codex/comments/1uzbpec/does_superpowers_suck_with_56_and_just_eat_tokens/)。
 
-两条 Codex 用户记录展示了这类失败模式：
-
-- [用户删除 Superpowers 后，异常 token 消耗停止](https://www.reddit.com/r/OpenaiCodex/comments/1v3mt8k/burned_4_of_my_weekly_limit_just_by_pushing_and/)；
-- [GPT-5.6 Codex 用户讨论：多人因 token 消耗、过度思考和质量下降而停用 Superpowers](https://www.reddit.com/r/codex/comments/1uzbpec/does_superpowers_suck_with_56_and_just_eat_tokens/)。
-
-证据边界：这些链接记录了用户观察，没有提供受控基准测试。它们证明这个风险已经在真实 Codex 工作流中出现，也说明为什么本分支把 Workflow 和 Skill 的触发权交还给用户和模型。
-
-- **官方客户端，自维护网关。** Web、Desktop 和 Mobile 可以继续跟随官方版本；本机只需替换同一个 Go CLI/daemon，不需要 fork 整个客户端才能获得核心体验。
+- **官方客户端，自维护网关。** Web、Desktop 和 Mobile 可以继续跟随官方版本；本机只需替换同一个 Go CLI/daemon，不需要 fork 整个客户端就能获得核心体验。
+- **Workflow 和 Skill 不再默认接管模型。** 上游完整 Prompt 会重复强调 issue/comment 工作流、CLI 使用和 Skill 激活规则；“匹配就调用”会让模型过度敏感，容易启动与当前任务无关的 Skill，同时持续消耗上下文。本分支的 `minimal` 只保留必要环境事实和中性 Skill 清单，**可见不等于必须触发**；`off` 移除 Multica 运行时工作流和服务端 Skill，`full` 才保留官方完整行为。
 - **Multica 不再向代码目录写入 sidecar。** 上游运行模式可能写入或改写 `AGENTS.md`、`CLAUDE.md`、`.agent_context/`、`reasonix.toml`、`.cursor/mcp.json` 等运行说明和项目 MCP 配置。native 模式不向 cwd 写这些 Multica runtime sidecar；日志、凭证、provider home 和 task scratch 全部保持在独立的私有状态目录。
 - **连续会话，不用平台工作流换取历史。** Codex thread 和 Pi/OMP session 不再因 workdir 变化、取消 turn 或追加消息轻易冷启动；Web 私聊恢复后只发送新增消息，不在每个 turn 重放稳定的平台套话。
-- **Workflow 和 Skill 不再默认接管模型。** 上游完整 Prompt 会重复强调 issue/comment 工作流、CLI 使用和 Skill 激活规则；“匹配就调用”会让模型过度敏感，容易启动与当前任务无关的 Skill，同时持续消耗上下文。本分支的 `minimal` 只保留必要环境事实和中性 Skill 清单，**可见不等于必须触发**；`off` 移除 Multica 运行时工作流和服务端 Skill，`full` 才保留官方完整行为。
 - **通用修复回馈上游，个人取舍留在 fork。** 可复用的协议、会话和 CLI 修复会拆成独立 PR 提交给 Multica；“网关而非工作流”这种明确带有个人偏好的组合仍由本分支维护。
 
 ## 已被上游合并的贡献
