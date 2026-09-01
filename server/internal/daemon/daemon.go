@@ -7608,6 +7608,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}
 	prompt := BuildPrompt(task, provider, promptOptions...)
+	resumedPrompt := ""
+	if provider == "codex" && task.ChatSessionID != "" && task.ChatChannelType == "" && !task.ChatIntro {
+		resumedPrompt = buildResumedWebDirectPrompt(task, promptOptions...)
+	}
 
 	// Pass task-scoped auth credentials and context so the spawned agent CLI
 	// can call the Multica API and the local daemon (e.g. `multica repo checkout`).
@@ -7834,6 +7838,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		HandshakeTimeout:           d.cfg.CodexHandshakeTimeout,
 		ThreadHandshakeTimeout:     d.cfg.CodexThreadHandshakeTimeout,
 		ResumeSessionID:            task.PriorSessionID,
+		ResumedPrompt:              resumedPrompt,
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it
 		// survived to here, the backend must disclose the loss when the live

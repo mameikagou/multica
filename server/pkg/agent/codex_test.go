@@ -2169,6 +2169,24 @@ func TestCodexTurnInput(t *testing.T) {
 	}
 }
 
+func TestCodexPromptForThread(t *testing.T) {
+	t.Parallel()
+
+	const (
+		full  = "full cold-start prompt"
+		delta = "raw follow-up message"
+	)
+	if got := codexPromptForThread(full, delta, true); got != delta {
+		t.Fatalf("confirmed resume prompt = %q, want delta %q", got, delta)
+	}
+	if got := codexPromptForThread(full, delta, false); got != full {
+		t.Fatalf("fresh fallback prompt = %q, want full %q", got, full)
+	}
+	if got := codexPromptForThread(full, "", true); got != full {
+		t.Fatalf("resume without alternate prompt = %q, want full %q", got, full)
+	}
+}
+
 // TestCodexTurnInputNoticeMatchesWhatTheSurfaceLost is the MUL-5722 half of the
 // continuity notice. An issue's discussion survives in its comments, which the
 // agent re-reads every turn, so ordering it to announce "the previous context

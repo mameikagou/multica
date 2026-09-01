@@ -896,6 +896,69 @@ func TestBuildChatPromptAudience(t *testing.T) {
 	}
 }
 
+func TestBuildResumedWebDirectPromptOnlySendsTurnDelta(t *testing.T) {
+	t.Parallel()
+
+	const message = "你的工作目录是？"
+	got := buildResumedWebDirectPrompt(Task{
+		ChatSessionID:  "chat-1",
+		ChatMessage:    message,
+		InitiatorType:  "member",
+		InitiatorName:  "mrlonely1226",
+		InitiatorEmail: "mrlonely1226@outlook.com",
+	})
+	if got != message {
+		t.Fatalf("resumed web direct prompt = %q, want raw user message %q", got, message)
+	}
+	for _, stale := range []string{
+		"You are running as a chat assistant",
+		"Audience: direct room",
+		"User message:",
+		"multica attachment upload",
+		"## Task Initiator",
+		"mrlonely1226@outlook.com",
+	} {
+		if strings.Contains(got, stale) {
+			t.Errorf("resumed web direct prompt replayed stable context %q\n---\n%s", stale, got)
+		}
+	}
+}
+
+func TestBuildResumedWebDirectPromptKeepsTurnScopedContext(t *testing.T) {
+	t.Parallel()
+
+	got := buildResumedWebDirectPrompt(Task{
+		ChatSessionID: "chat-1",
+		ChatMessage:   "看下这个截图",
+		ChatMessageAttachments: []ChatAttachmentMeta{{
+			ID:          "attachment-1",
+			Filename:    "screen.png",
+			ContentType: "image/png",
+		}},
+		ConnectedApps: []ConnectedAppData{{
+			Provider:    "composio",
+			ServerName:  "composio",
+			ToolkitSlug: "notion",
+			ToolkitName: "Notion",
+		}},
+	})
+	for _, want := range []string{
+		"看下这个截图",
+		"id=attachment-1",
+		"filename=\"screen.png\"",
+		"multica attachment download",
+		"## Connected Apps",
+		"Notion",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("resumed web direct prompt lost turn-scoped context %q\n---\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "multica attachment upload") {
+		t.Errorf("resumed web direct prompt replayed stable outbound upload tutorial\n---\n%s", got)
+	}
+}
+
 func TestBuildChatPromptAgentIntro(t *testing.T) {
 	// Historical proactive-introduction sessions remain readable even though
 	// new agent creation no longer creates one. Their message-less first turn
