@@ -17,10 +17,14 @@
 
 这不是一个“比上游多几个开关”的补丁堆，而是一个长期维护的 **Agent 网关发行版**：它保留 Multica 作为多端入口和运行时调度器的价值，同时把工作目录、会话、Prompt、Skill 和代码目录的最终控制权交还给用户和 Agent。
 
+> [!NOTE]
+> **上游默认提供的是“受管任务工作流”，不是中性网关。** Agent 默认进入 Multica 生成的 task workdir，而不是用户真正的代码根目录；平台还会向运行目录写入 sidecar，并向模型注入 Workflow 和 Skill 激活规则。这适合希望 Multica 全面管理任务的团队，但会打乱已有成熟本地工作流的用户。
+
 - **官方客户端，自维护网关。** Web、Desktop 和 Mobile 可以继续跟随官方版本；本机只需替换同一个 Go CLI/daemon，不需要 fork 整个客户端才能获得核心体验。
-- **真实 cwd，不污染代码目录。** 所有 Agent/Harness 可从用户指定的 `native_workdir` 启动，Multica 的日志、凭证、provider home 和 task scratch 保持在独立的私有状态目录。
+- **Agent 直接在真正的代码根目录工作。** 上游默认把工作位置固定为 Multica 生成的 task workdir，cwd 和项目发现因此受平台目录布局控制，而不是用户明确选择的代码根目录。本分支的通用 `native_workdir` 让 Codex、Claude Code、Cursor、Pi 等 Agent/Harness 从用户指定的真实 cwd 启动，保留 provider 原生的项目发现、Git 上下文和本地规则。
+- **Multica 不再向代码目录写入 sidecar。** 上游运行模式可能写入或改写 `AGENTS.md`、`CLAUDE.md`、`.agent_context/`、`reasonix.toml`、`.cursor/mcp.json` 等运行说明和项目 MCP 配置。native 模式不向 cwd 写这些 Multica runtime sidecar；日志、凭证、provider home 和 task scratch 全部保持在独立的私有状态目录。
 - **连续会话，不用平台工作流换取历史。** Codex thread 和 Pi/OMP session 不再因 workdir 变化、取消 turn 或追加消息轻易冷启动；Web 私聊恢复后只发送新增消息，不在每个 turn 重放稳定的平台套话。
-- **平台能力可选，不强制接管。** `minimal` 保留必要的环境事实与 Skill 可见性，`off` 移除 Multica 运行时工作流，`full` 则保留官方行为。
+- **Workflow 和 Skill 不再默认接管模型。** 上游完整 Prompt 会重复强调 issue/comment 工作流、CLI 使用和 Skill 激活规则；“匹配就调用”会让模型过度敏感，容易启动与当前任务无关的 Skill，同时持续消耗上下文。本分支的 `minimal` 只保留必要环境事实和中性 Skill 清单，**可见不等于必须触发**；`off` 移除 Multica 运行时工作流和服务端 Skill，`full` 才保留官方完整行为。
 - **把用户代码与可回收 workspace 分开。** daemon 的 GC 只能修改能证明归属于 Multica task 的受管路径；`native_workdir` 不会被当成可丢弃的 task workspace。
 - **通用修复回馈上游，个人取舍留在 fork。** 可复用的协议、会话和 CLI 修复会拆成独立 PR 提交给 Multica；“网关而非工作流”这种明确带有个人偏好的组合仍由本分支维护。
 
