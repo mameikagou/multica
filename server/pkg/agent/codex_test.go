@@ -469,8 +469,8 @@ func TestCodexRawTurnStarted(t *testing.T) {
 	if c.notificationProtocol != "raw" {
 		t.Fatalf("expected protocol=raw, got %q", c.notificationProtocol)
 	}
-	if c.turnID != "turn-1" {
-		t.Fatalf("expected turnID=turn-1, got %q", c.turnID)
+	if turnID := c.activeTurnID(); turnID != "turn-1" {
+		t.Fatalf("expected turnID=turn-1, got %q", turnID)
 	}
 }
 
@@ -1566,8 +1566,8 @@ func TestCodexTurnNotificationGateIgnoresSubagentTurnStarted(t *testing.T) {
 	if gate.turnID != "turn-main" {
 		t.Fatalf("subagent turn/started replaced gate turnID: got %q", gate.turnID)
 	}
-	if c.turnID != "turn-main" {
-		t.Fatalf("subagent turn/started replaced client turnID: got %q", c.turnID)
+	if turnID := c.activeTurnID(); turnID != "turn-main" {
+		t.Fatalf("subagent turn/started replaced client turnID: got %q", turnID)
 	}
 	if gotText != "Main answer" {
 		t.Fatalf("main turn text was lost after subagent start: got %q", gotText)
@@ -3773,37 +3773,113 @@ func TestCodexExecuteCancellationInterruptsTurnAndPreservesUsage(t *testing.T) {
 	}
 }
 
+func TestCodexThreadTokenUsageUpdatedDropsResumeReplay(t *testing.T) {
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	c.threadID = "thread-resumed"
+	gate := &codexTurnNotificationGate{}
+	gate.arm()
+
+	// Codex deliberately emits the restored historical usage after the
+	// thread/resume response. The gate is armed by then, but no current turn ID
+	// exists yet, so this prior-turn snapshot must not be charged.
+	replay := codexThreadTokenUsageParams(
+		"thread-resumed", "turn-previous",
+		map[string]any{"inputTokens": float64(10_000), "outputTokens": float64(500)},
+		map[string]any{"inputTokens": float64(400), "outputTokens": float64(20)},
+	)
+	if !gate.accept("thread/tokenUsage/updated", replay) {
+		t.Fatal("armed notification gate should expose the resume replay to usage attribution")
+	}
+	c.handleRawNotification("thread/tokenUsage/updated", replay)
+	c.handleRawNotification("turn/started", map[string]any{
+		"threadId": "thread-resumed",
+		"turn":     map[string]any{"id": "turn-current"},
+	})
+	c.handleRawNotification("thread/tokenUsage/updated", codexThreadTokenUsageParams(
+		"thread-resumed", "turn-current",
+		map[string]any{"inputTokens": float64(10_100), "cachedInputTokens": float64(30), "outputTokens": float64(510)},
+		map[string]any{"inputTokens": float64(100), "cachedInputTokens": float64(30), "outputTokens": float64(10)},
+	))
+
+	c.usageMu.Lock()
+	got := c.usage
+	c.usageMu.Unlock()
+	want := (TokenUsage{InputTokens: 70, OutputTokens: 10, CacheReadTokens: 30})
+	if got != want {
+		t.Fatalf("usage after resume replay = %+v, want current turn only %+v", got, want)
+	}
+}
+
+func TestCodexThreadTokenUsageUpdatedDeduplicatesSnapshot(t *testing.T) {
+	c := &codexClient{}
+	c.setActiveTurnID("turn-current")
+	params := codexThreadTokenUsageParams(
+		"thread-1", "turn-current",
+		map[string]any{"inputTokens": float64(10_100), "cachedInputTokens": float64(30), "outputTokens": float64(510)},
+		map[string]any{"inputTokens": float64(100), "cachedInputTokens": float64(30), "outputTokens": float64(10)},
+	)
+	c.updateThreadTokenUsage(params)
+	c.updateThreadTokenUsage(params)
+
+	c.usageMu.Lock()
+	got := c.usage
+	c.usageMu.Unlock()
+	want := (TokenUsage{InputTokens: 70, OutputTokens: 10, CacheReadTokens: 30})
+	if got != want {
+		t.Fatalf("usage after duplicate snapshot = %+v, want %+v", got, want)
+	}
+}
+
 func TestCodexThreadTokenUsageUpdatedAccumulatesCurrentTurnResponses(t *testing.T) {
 	c := &codexClient{}
-	c.updateThreadTokenUsage(map[string]any{
-		"tokenUsage": map[string]any{
-			// The cumulative total can include resumed history and is deliberately
-			// much larger than the response being charged to this task.
-			"total": map[string]any{"inputTokens": float64(10_000)},
-			"last": map[string]any{
-				"inputTokens": float64(100), "cachedInputTokens": float64(30),
-				"outputTokens": float64(10), "reasoningOutputTokens": float64(2),
-				"cacheWriteInputTokens": float64(4),
-			},
+	c.setActiveTurnID("turn-current")
+	c.updateThreadTokenUsage(codexThreadTokenUsageParams(
+		"thread-1", "turn-current",
+		// The cumulative total includes resumed history and is deliberately much
+		// larger than the first response being charged to this task.
+		map[string]any{
+			"inputTokens": float64(10_000), "cachedInputTokens": float64(2_000),
+			"outputTokens": float64(100), "reasoningOutputTokens": float64(10),
+			"cacheWriteInputTokens": float64(20),
 		},
-	})
-	c.updateThreadTokenUsage(map[string]any{
-		"tokenUsage": map[string]any{
-			"total": map[string]any{"inputTokens": float64(10_150)},
-			"last": map[string]any{
-				"inputTokens": float64(150), "cachedInputTokens": float64(50),
-				"outputTokens": float64(20), "reasoningOutputTokens": float64(3),
-				"cacheWriteInputTokens": float64(6),
-			},
+		map[string]any{
+			"inputTokens": float64(100), "cachedInputTokens": float64(30),
+			"outputTokens": float64(10), "reasoningOutputTokens": float64(2),
+			"cacheWriteInputTokens": float64(4),
 		},
-	})
+	))
+	c.updateThreadTokenUsage(codexThreadTokenUsageParams(
+		"thread-1", "turn-current",
+		map[string]any{
+			"inputTokens": float64(10_150), "cachedInputTokens": float64(2_050),
+			"outputTokens": float64(120), "reasoningOutputTokens": float64(13),
+			"cacheWriteInputTokens": float64(26),
+		},
+		map[string]any{
+			"inputTokens": float64(150), "cachedInputTokens": float64(50),
+			"outputTokens": float64(20), "reasoningOutputTokens": float64(3),
+			"cacheWriteInputTokens": float64(6),
+		},
+	))
 
 	c.usageMu.Lock()
 	got := c.usage
 	c.usageMu.Unlock()
 	want := (TokenUsage{InputTokens: 170, OutputTokens: 35, CacheReadTokens: 80, CacheWriteTokens: 10})
 	if got != want {
-		t.Fatalf("cumulative usage = %+v, want %+v", got, want)
+		t.Fatalf("multi-response usage = %+v, want %+v", got, want)
+	}
+}
+
+func codexThreadTokenUsageParams(threadID, turnID string, total, last map[string]any) map[string]any {
+	return map[string]any{
+		"threadId": threadID,
+		"turnId":   turnID,
+		"tokenUsage": map[string]any{
+			"total": total,
+			"last":  last,
+		},
 	}
 }
 

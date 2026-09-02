@@ -1611,18 +1611,19 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				waitingForTurn = false
 				finishFirstItemWait("no_progress_timeout")
 				finalStatus = "timeout"
+				turnID := c.activeTurnID()
 				timeoutDiagnostic = codexTimeoutDiagnostic{
 					Kind:         codexTimeoutFirstTurnNoProgress,
 					Timeout:      firstTurnNoProgressTimeout,
 					LastActivity: lastSemanticActivityDescription,
 					ThreadID:     threadID,
-					TurnID:       c.turnID,
+					TurnID:       turnID,
 					Model:        opts.Model,
 				}
 				b.cfg.Logger.Warn(CodexFirstTurnNoProgressMarker,
 					"pid", cmd.Process.Pid,
 					"thread_id", threadID,
-					"turn_id", c.turnID,
+					"turn_id", turnID,
 					"timeout", firstTurnNoProgressTimeout.String(),
 					"last_activity", lastSemanticActivityDescription,
 				)
@@ -1630,18 +1631,19 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				waitingForTurn = false
 				finishFirstItemWait("semantic_inactivity_timeout")
 				finalStatus = "timeout"
+				turnID := c.activeTurnID()
 				timeoutDiagnostic = codexTimeoutDiagnostic{
 					Kind:         codexTimeoutSemanticInactivity,
 					Timeout:      semanticInactivityTimeout,
 					LastActivity: lastSemanticActivityDescription,
 					ThreadID:     threadID,
-					TurnID:       c.turnID,
+					TurnID:       turnID,
 					Model:        opts.Model,
 				}
 				b.cfg.Logger.Warn(CodexSemanticInactivityMarker,
 					"pid", cmd.Process.Pid,
 					"thread_id", threadID,
-					"turn_id", c.turnID,
+					"turn_id", turnID,
 					"timeout", semanticInactivityTimeout.String(),
 					"last_activity", lastSemanticActivityDescription,
 					"idle_for", time.Since(lastSemanticActivity).Round(time.Millisecond).String(),
@@ -1731,7 +1733,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				"active_launches", activeLaunches,
 				"method", "turn/start",
 				"thread_id", threadID,
-				"turn_id", c.turnID,
+				"turn_id", c.activeTurnID(),
 				"outcome", outcome,
 				"latency", waitLatency.Round(time.Millisecond).String(),
 				"latency_ms", waitLatency.Milliseconds(),
@@ -2233,6 +2235,7 @@ type codexClient struct {
 	threadSetupMethod      string
 	threadSetupStarted     time.Time
 	threadID               string
+	turnIDMu               sync.RWMutex
 	turnID                 string
 	onMessage              func(Message)
 	onSemanticActivity     func(description string)
@@ -2257,6 +2260,11 @@ type codexClient struct {
 
 	usageMu sync.Mutex
 	usage   TokenUsage // accumulated from turn events
+	// usageTotal is the last accepted cumulative v2 usage snapshot for the
+	// active turn. Comparing later snapshots against it makes replay and
+	// duplicate delivery idempotent while retaining multi-response turns.
+	usageTotal    codexRawTokenUsage
+	usageTotalSet bool
 
 	turnErrorMu sync.Mutex
 	turnError   string // captured from turn/completed status=failed or terminal error notifications
@@ -2345,6 +2353,21 @@ func (c *codexClient) getTurnError() string {
 	return c.turnError
 }
 
+func (c *codexClient) setActiveTurnID(turnID string) {
+	if turnID == "" {
+		return
+	}
+	c.turnIDMu.Lock()
+	c.turnID = turnID
+	c.turnIDMu.Unlock()
+}
+
+func (c *codexClient) activeTurnID() string {
+	c.turnIDMu.RLock()
+	defer c.turnIDMu.RUnlock()
+	return c.turnID
+}
+
 type pendingRPC struct {
 	ch     chan rpcResult
 	method string
@@ -2416,7 +2439,7 @@ func interruptCodexTurn(c *codexClient, threadID string, turnDone <-chan bool, c
 	default:
 	}
 
-	turnID := c.turnID
+	turnID := c.activeTurnID()
 	if threadID == "" || turnID == "" {
 		return false
 	}
@@ -3261,7 +3284,7 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 
 	case "turn/started":
 		if turnID := extractNestedString(params, "turn", "id"); turnID != "" {
-			c.turnID = turnID
+			c.setActiveTurnID(turnID)
 		}
 		if c.onMessage != nil {
 			c.onMessage(Message{Type: MessageStatus, Status: "running", SessionID: c.threadID})
@@ -3437,12 +3460,22 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 }
 
 // updateThreadTokenUsage consumes the v2 app-server's real usage notification.
-// tokenUsage.total spans the entire thread, including history on resume;
-// tokenUsage.last is the newly completed model response. Summing each accepted
-// current-turn `last` breakdown therefore captures multi-response tool loops
-// without billing restored history to the new task.
+// Resume can replay a historical snapshot after thread/resume returns, so only
+// notifications attributed to the active turn are eligible. The first current-
+// turn snapshot contributes `last`; later snapshots contribute the monotonic
+// delta from `total`. This retains multi-response tool loops without charging
+// replayed history or duplicate snapshots twice.
 func (c *codexClient) updateThreadTokenUsage(params map[string]any) {
+	turnID, _ := params["turnId"].(string)
+	if turnID == "" || turnID != c.activeTurnID() {
+		return
+	}
+
 	tokenUsage, ok := params["tokenUsage"].(map[string]any)
+	if !ok {
+		return
+	}
+	totalMap, ok := tokenUsage["total"].(map[string]any)
 	if !ok {
 		return
 	}
@@ -3451,14 +3484,29 @@ func (c *codexClient) updateThreadTokenUsage(params map[string]any) {
 		return
 	}
 
-	inputTokens := codexInt64(last, "inputTokens")
-	cacheReadTokens := codexInt64(last, "cachedInputTokens")
+	total := codexRawTokenUsageFromV2(totalMap)
+	delta := codexRawTokenUsageFromV2(last)
 	c.usageMu.Lock()
-	c.usage.InputTokens += codexUncachedInputTokens(inputTokens, cacheReadTokens)
-	c.usage.OutputTokens += codexInt64(last, "outputTokens") + codexInt64(last, "reasoningOutputTokens")
-	c.usage.CacheReadTokens += cacheReadTokens
-	c.usage.CacheWriteTokens += codexInt64(last, "cacheWriteInputTokens")
+	if c.usageTotalSet {
+		delta = subtractCodexRawTokenUsage(total, c.usageTotal)
+	}
+	c.usageTotal = total
+	c.usageTotalSet = true
+	c.usage.InputTokens += codexUncachedInputTokens(delta.InputTokens, delta.CachedInputTokens)
+	c.usage.OutputTokens += delta.OutputTokens + delta.ReasoningOutputTokens
+	c.usage.CacheReadTokens += delta.CachedInputTokens
+	c.usage.CacheWriteTokens += delta.CacheWriteInputTokens
 	c.usageMu.Unlock()
+}
+
+func codexRawTokenUsageFromV2(usage map[string]any) codexRawTokenUsage {
+	return codexRawTokenUsage{
+		InputTokens:           codexInt64(usage, "inputTokens"),
+		OutputTokens:          codexInt64(usage, "outputTokens"),
+		CachedInputTokens:     codexInt64(usage, "cachedInputTokens"),
+		CacheWriteInputTokens: codexInt64(usage, "cacheWriteInputTokens"),
+		ReasoningOutputTokens: codexInt64(usage, "reasoningOutputTokens"),
+	}
 }
 
 func isCodexItemProgressActivity(method string) bool {
@@ -3705,6 +3753,7 @@ type codexRawTokenUsage struct {
 	OutputTokens          int64 `json:"output_tokens"`
 	CachedInputTokens     int64 `json:"cached_input_tokens"`
 	CacheReadInputTokens  int64 `json:"cache_read_input_tokens"`
+	CacheWriteInputTokens int64 `json:"cache_write_input_tokens"`
 	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
 }
 
@@ -3824,6 +3873,7 @@ func subtractCodexRawTokenUsage(total, baseline codexRawTokenUsage) codexRawToke
 		InputTokens:           nonNegativeTokenDelta(total.InputTokens, baseline.InputTokens),
 		OutputTokens:          nonNegativeTokenDelta(total.OutputTokens, baseline.OutputTokens),
 		CachedInputTokens:     nonNegativeTokenDelta(total.CachedInputTokens, baseline.CachedInputTokens),
+		CacheWriteInputTokens: nonNegativeTokenDelta(total.CacheWriteInputTokens, baseline.CacheWriteInputTokens),
 		ReasoningOutputTokens: nonNegativeTokenDelta(total.ReasoningOutputTokens, baseline.ReasoningOutputTokens),
 	}
 }
@@ -3841,6 +3891,7 @@ func addCodexRawTokenUsage(a, b codexRawTokenUsage) codexRawTokenUsage {
 		InputTokens:           a.InputTokens + b.InputTokens,
 		OutputTokens:          a.OutputTokens + b.OutputTokens,
 		CachedInputTokens:     a.CachedInputTokens + b.CachedInputTokens,
+		CacheWriteInputTokens: a.CacheWriteInputTokens + b.CacheWriteInputTokens,
 		ReasoningOutputTokens: a.ReasoningOutputTokens + b.ReasoningOutputTokens,
 	}
 }
