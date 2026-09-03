@@ -240,19 +240,19 @@ func TestOpenclawActiveConfigPathSpendsOneBudgetAcrossBothAttempts(t *testing.T)
 //
 // That distinction is the review finding it exists for. The worst case is not the
 // common two calls: `config validate --json` can fail to answer and fall back to
-// `config file`, a 2026.6+ host falls back to the registry subcommand, and an
-// agent with a managed mcp_config additionally reads the full resolved config —
-// five invocations. The previous version of this test could not see the first of
-// those, because the stub synthesizes a `config validate --json` success from the
+// `config file`, and a 2026.6+ host falls back to the registry subcommand — four
+// invocations. The earlier version of this test could not see the first pair,
+// because the stub synthesizes a `config validate --json` success from the
 // `config file` response, so the two never fired in the same run. With the
-// fallback carrying a fresh full deadline, five budgets at the 60s ceiling is 5m
-// of CLI time alone, landing exactly on daemon.defaultTaskPrepareTimeout — and
-// the specific, non-retryable ErrOpenclawCLITimeout collapses back into the
-// generic retryable one.
+// fallback carrying a fresh full deadline, the worst case was five budgets at the
+// 60s ceiling, i.e. 5m of CLI time alone, landing exactly on
+// daemon.defaultTaskPrepareTimeout — and the specific, non-retryable
+// ErrOpenclawCLITimeout collapses back into the generic retryable one.
 //
-// So this drives the real worst case and asserts both halves: the call graph is
-// five invocations, and path resolution's two share one deadline, leaving four
-// budgets.
+// A managed mcp_config used to add a fifth invocation of its own. It no longer
+// reads anything (see TestPrepareOpenclawConfigManagedMcpCostsNoExtraCLICall), so
+// this drives the managed path too and still expects four invocations across
+// three deadlines: path resolution's two share one.
 func TestPrepareOpenclawConfigWorstCaseCLIBudgets(t *testing.T) {
 	envRoot := t.TempDir()
 	workDir := filepath.Join(envRoot, "workdir")
@@ -273,8 +273,10 @@ func TestPrepareOpenclawConfigWorstCaseCLIBudgets(t *testing.T) {
 		"config get agents.list --json": {err: errors.New("Config path not found: agents.list")},
 		// 3. registry fallback
 		"agents list --json": {stdout: `[{"id":"scout"}]`},
-		// 4. full resolved config, reached only via a managed mcp_config
-		"config get --json": {stdout: `{"agents":{"list":[{"id":"scout"}]}}`},
+		// No fourth entry, and the managed mcp_config below is why that is worth
+		// stating: managed MCP is prepared from a file this package writes, so it
+		// adds no invocation. The stub errors on anything unregistered, so a
+		// reintroduced read fails here instead of quietly costing a budget.
 	})
 
 	if _, err := prepareOpenclawConfig(envRoot, workDir, OpenclawConfigPrep{
@@ -303,7 +305,6 @@ func TestPrepareOpenclawConfigWorstCaseCLIBudgets(t *testing.T) {
 		"config file",
 		"config get agents.list --json",
 		"agents list --json",
-		"config get --json",
 	}
 	if strings.Join(invocations, " | ") != strings.Join(wantInvocations, " | ") {
 		t.Errorf("worst-case invocations:\n got: %v\nwant: %v", invocations, wantInvocations)
