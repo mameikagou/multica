@@ -79,26 +79,29 @@ func (u antigravityStreamUsage) hasTokens() bool {
 	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0
 }
 
-// tokenUsage converts agy's accounting to Multica's mutually exclusive token
-// buckets. thinking_tokens is already included in output_tokens and must not be
-// added again. When total_tokens proves that input_tokens includes cached
-// input, move the cache counts out of the ordinary input bucket so dashboard
-// totals and pricing do not count them twice.
+// tokenUsage maps agy's provider-defined buckets directly. Cache reads are
+// separate from input_tokens even when total_tokens equals input + output; the
+// official structured-output examples include cache reads larger than input.
+// thinking_tokens is already included in output_tokens and must not be added
+// again.
 func (u antigravityStreamUsage) tokenUsage() TokenUsage {
-	cacheRead := nonNegativeTokens(u.CacheReadTokens)
-	cacheWrite := nonNegativeTokens(u.CacheWriteTokens)
-	input := nonNegativeTokens(u.InputTokens)
-	output := nonNegativeTokens(u.OutputTokens)
-	if cacheTotal := cacheRead + cacheWrite; u.TotalTokens > 0 &&
-		u.TotalTokens == input+output && cacheTotal <= input {
-		input -= cacheTotal
-	}
 	return TokenUsage{
-		InputTokens:      input,
-		OutputTokens:     output,
-		CacheReadTokens:  cacheRead,
-		CacheWriteTokens: cacheWrite,
+		InputTokens:      nonNegativeTokens(u.InputTokens),
+		OutputTokens:     nonNegativeTokens(u.OutputTokens),
+		CacheReadTokens:  nonNegativeTokens(u.CacheReadTokens),
+		CacheWriteTokens: nonNegativeTokens(u.CacheWriteTokens),
 	}
+}
+
+func sumAntigravityStepUsage(steps map[int]TokenUsage) (TokenUsage, bool) {
+	var total TokenUsage
+	for _, step := range steps {
+		total.InputTokens += step.InputTokens
+		total.OutputTokens += step.OutputTokens
+		total.CacheReadTokens += step.CacheReadTokens
+		total.CacheWriteTokens += step.CacheWriteTokens
+	}
+	return total, len(steps) > 0
 }
 
 func antigravityResultStatus(status string) string {
@@ -311,6 +314,14 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 		} else if runCtx.Err() == context.Canceled {
 			finalStatus = "aborted"
 			finalError = "execution cancelled"
+		} else if status := antigravityResultStatus(streamResultStatus); finalStatus == "completed" && status != "completed" {
+			// Prefer the provider's structured error even when agy also exits
+			// non-zero; the process status alone discards the actionable cause.
+			finalStatus = status
+			finalError = streamResultError
+			if finalError == "" {
+				finalError = fmt.Sprintf("agy returned status %s", streamResultStatus)
+			}
 		} else if waitErr != nil && finalStatus == "completed" {
 			finalStatus = "failed"
 			finalError = fmt.Sprintf("agy exited with error: %v", waitErr)
@@ -325,12 +336,6 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 				"agy --print-timeout elapsed after %s waiting for the agent response; a long-running command likely outlived the print timeout",
 				antigravityPrintTimeout(timeout),
 			)
-		} else if status := antigravityResultStatus(streamResultStatus); finalStatus == "completed" && status != "completed" {
-			finalStatus = status
-			finalError = streamResultError
-			if finalError == "" {
-				finalError = fmt.Sprintf("agy returned status %s", streamResultStatus)
-			}
 		} else if providerErr := antigravityProviderError(logPath); finalStatus == "completed" && providerErr != "" {
 			// agy can also surface terminal model/provider failures only in the
 			// per-run log while exiting 0 with empty stdout. Without promoting
@@ -370,19 +375,14 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 
 		b.cfg.Logger.Info("agy finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		var usage TokenUsage
-		if streamResultUsage != nil {
+		// agy result.usage is cumulative across a resumed conversation, while
+		// completed step usage covers only this execution. Prefer the
+		// deduplicated step sum so resumed tasks do not persist earlier turns
+		// again. A terminal result remains the fallback for failures that emit
+		// no completed step usage.
+		usage, hasStepUsage := sumAntigravityStepUsage(streamStepUsage)
+		if !hasStepUsage && streamResultUsage != nil {
 			usage = streamResultUsage.tokenUsage()
-		} else {
-			// result.usage is the authoritative aggregate. A cancelled or
-			// killed process may never emit result, so sum each completed step
-			// exactly once as the best available fallback.
-			for _, step := range streamStepUsage {
-				usage.InputTokens += step.InputTokens
-				usage.OutputTokens += step.OutputTokens
-				usage.CacheReadTokens += step.CacheReadTokens
-				usage.CacheWriteTokens += step.CacheWriteTokens
-			}
 		}
 		usageByModel := map[string]TokenUsage{}
 		if usage != (TokenUsage{}) {
