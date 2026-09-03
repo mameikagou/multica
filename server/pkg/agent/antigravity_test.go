@@ -804,7 +804,7 @@ cat <<'JSONL'
 {"event":"step_update","step_update":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"Hello"}}
 {"event":"step_update","step_update":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":1000,"output_tokens":50,"thinking_tokens":30,"cache_read_tokens":400,"cache_write_tokens":0,"total_tokens":1050}}}
 {"event":"step_update","step_update":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":3,"state":"DONE","step_type":"checkpoint","usage":{"input_tokens":100,"output_tokens":4,"thinking_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"total_tokens":104}}}
-{"event":"result","result":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","status":"SUCCESS","response":"Hello\n","usage":{"input_tokens":1100,"output_tokens":54,"thinking_tokens":30,"cache_read_tokens":400,"cache_write_tokens":0,"total_tokens":1154}}}
+{"event":"result","result":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","status":"SUCCESS","response":"Hello\n","usage":{"input_tokens":5000,"output_tokens":200,"thinking_tokens":120,"cache_read_tokens":1200,"cache_write_tokens":0,"total_tokens":5200}}}
 JSONL
 exit 0
 `
@@ -813,6 +813,7 @@ exit 0
 func fakeAgyFailedStreamJSONScript() string {
 	return `#!/bin/sh
 printf '%s\n' '{"event":"result","result":{"conversation_id":"17a6d8f2-8523-46fc-8fc9-87e630cbe295","status":"ERROR","error":"provider failed","usage":{"input_tokens":12,"output_tokens":3,"thinking_tokens":2,"cache_read_tokens":7,"cache_write_tokens":2,"total_tokens":15}}}'
+exit 1
 `
 }
 
@@ -864,15 +865,16 @@ func TestAntigravityBackendStreamJSONCapturesUsage(t *testing.T) {
 	if !ok {
 		t.Fatalf("usage missing model key: %#v", result.Usage)
 	}
-	// result.usage is the authoritative aggregate. Adding the two completed
-	// steps on top would double-count the turn.
-	want := TokenUsage{InputTokens: 700, OutputTokens: 54, CacheReadTokens: 400}
+	// result.usage is cumulative across a resumed conversation. The two DONE
+	// steps are this execution's usage and must win without double-counting the
+	// terminal aggregate.
+	want := TokenUsage{InputTokens: 1100, OutputTokens: 54, CacheReadTokens: 400}
 	if usage != want {
 		t.Fatalf("usage = %+v, want %+v", usage, want)
 	}
 }
 
-func TestAntigravityStreamUsageNormalizesOnlyWithTotalEvidence(t *testing.T) {
+func TestAntigravityStreamUsageMapsProviderBucketsDirectly(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -881,14 +883,14 @@ func TestAntigravityStreamUsageNormalizesOnlyWithTotalEvidence(t *testing.T) {
 		want TokenUsage
 	}{
 		{
-			name: "inclusive cached input",
-			raw:  antigravityStreamUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, TotalTokens: 120},
-			want: TokenUsage{InputTokens: 60, OutputTokens: 20, CacheReadTokens: 40},
+			name: "official example cache larger than input",
+			raw:  antigravityStreamUsage{InputTokens: 278, OutputTokens: 4, CacheReadTokens: 30214, TotalTokens: 282},
+			want: TokenUsage{InputTokens: 278, OutputTokens: 4, CacheReadTokens: 30214},
 		},
 		{
-			name: "exclusive or unknown total stays unchanged",
-			raw:  antigravityStreamUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, TotalTokens: 160},
-			want: TokenUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40},
+			name: "official example cache smaller than input",
+			raw:  antigravityStreamUsage{InputTokens: 10418, OutputTokens: 589, CacheReadTokens: 8113, TotalTokens: 11007},
+			want: TokenUsage{InputTokens: 10418, OutputTokens: 589, CacheReadTokens: 8113},
 		},
 	}
 	for _, tt := range tests {
@@ -963,7 +965,7 @@ func TestAntigravityBackendReportsStructuredFailureUsage(t *testing.T) {
 	if result.Status != "failed" || result.Error != "provider failed" {
 		t.Fatalf("result = status %q error %q", result.Status, result.Error)
 	}
-	want := TokenUsage{InputTokens: 3, OutputTokens: 3, CacheReadTokens: 7, CacheWriteTokens: 2}
+	want := TokenUsage{InputTokens: 12, OutputTokens: 3, CacheReadTokens: 7, CacheWriteTokens: 2}
 	if got := result.Usage["unknown"]; got != want {
 		t.Fatalf("usage = %+v, want %+v", got, want)
 	}
@@ -994,8 +996,8 @@ func TestAntigravityBackendSumsCompletedStepsWhenCancelled(t *testing.T) {
 		t.Fatalf("status = %q, want aborted (error=%q)", result.Status, result.Error)
 	}
 	// step 1's second DONE event replaces its first snapshot; step 2 is then
-	// added once. Both cache counts are moved out of ordinary input.
-	want := TokenUsage{InputTokens: 140, OutputTokens: 17, CacheReadTokens: 30}
+	// added once. Provider buckets retain their documented meanings.
+	want := TokenUsage{InputTokens: 170, OutputTokens: 17, CacheReadTokens: 30}
 	if got := result.Usage["gemini-3.8-flash-high"]; got != want {
 		t.Fatalf("usage = %+v, want %+v", got, want)
 	}
