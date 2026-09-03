@@ -30,6 +30,7 @@ func TestBuildAntigravityArgsBasic(t *testing.T) {
 	want := []string{
 		"-p", "hello",
 		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
 		"--print-timeout", "20m0s",
 		"--log-file", "/tmp/agy.log",
 		"--add-dir", "/work",
@@ -56,6 +57,7 @@ func TestBuildAntigravityArgsModel(t *testing.T) {
 	want := []string{
 		"-p", "hello",
 		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
 		"--model", "Claude Opus 4.6 (Thinking)",
 		"--print-timeout", "20m0s",
 		"--log-file", "/tmp/agy.log",
@@ -91,6 +93,7 @@ func TestBuildAntigravityArgsNoCapUsesLargePrintTimeout(t *testing.T) {
 	want := []string{
 		"-p", "hello",
 		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
 		"--print-timeout", antigravityFormatTimeout(antigravityNoCapPrintTimeout),
 		"--log-file", "/tmp/agy.log",
 		"--add-dir", "/work",
@@ -229,6 +232,7 @@ func TestBuildAntigravityArgsFiltersBlockedCustomArgs(t *testing.T) {
 				"-c",
 				"--conversation", "bad-id",
 				"--model", "sneaky-model", // managed via ExecOptions.Model
+				"--output-format", "text",
 				"--dangerously-skip-permissions",
 				"--print-timeout", "1h",
 				"--log-file", "/elsewhere.log",
@@ -262,6 +266,9 @@ func TestBuildAntigravityArgsFiltersBlockedCustomArgs(t *testing.T) {
 	}
 	if strings.Contains(joined, "sneaky-model") {
 		t.Errorf("custom --model value leaked through filter: %v", args)
+	}
+	if strings.Contains(joined, "--output-format text") {
+		t.Errorf("custom --output-format value leaked through filter: %v", args)
 	}
 	if strings.Contains(joined, "/elsewhere.log") {
 		t.Errorf("custom --log-file value leaked through filter: %v", args)
@@ -779,5 +786,217 @@ func TestAntigravityBackendStreamPreservesNewlines(t *testing.T) {
 
 	if got := streamed.String(); got != wantReply {
 		t.Fatalf("streamed task_message text lost its line breaks (#6149):\n got  %q\n want %q", got, wantReply)
+	}
+}
+
+func fakeAgyStreamJSONScript() string {
+	return `#!/bin/sh
+log=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --log-file) log="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -z "$log" ] || printf '%s\n' 'I0903 12:00:00.000000 1 model_config_manager.go:311] Propagating selected model override to backend: label="Gemini 3.8 Flash (High)"' >> "$log"
+cat <<'JSONL'
+{"event":"init","conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","init":{}}
+{"event":"step_update","step_update":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"Hello"}}
+{"event":"step_update","step_update":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":1000,"output_tokens":50,"thinking_tokens":30,"cache_read_tokens":400,"cache_write_tokens":0,"total_tokens":1050}}}
+{"event":"step_update","step_update":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":3,"state":"DONE","step_type":"checkpoint","usage":{"input_tokens":100,"output_tokens":4,"thinking_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"total_tokens":104}}}
+{"event":"result","result":{"conversation_id":"07a6d8f2-8523-46fc-8fc9-87e630cbe295","status":"SUCCESS","response":"Hello\n","usage":{"input_tokens":1100,"output_tokens":54,"thinking_tokens":30,"cache_read_tokens":400,"cache_write_tokens":0,"total_tokens":1154}}}
+JSONL
+exit 0
+`
+}
+
+func fakeAgyFailedStreamJSONScript() string {
+	return `#!/bin/sh
+printf '%s\n' '{"event":"result","result":{"conversation_id":"17a6d8f2-8523-46fc-8fc9-87e630cbe295","status":"ERROR","error":"provider failed","usage":{"input_tokens":12,"output_tokens":3,"thinking_tokens":2,"cache_read_tokens":7,"cache_write_tokens":2,"total_tokens":15}}}'
+`
+}
+
+func fakeAgyCancelledStreamJSONScript() string {
+	return `#!/bin/sh
+printf '%s\n' '{"event":"init","conversation_id":"27a6d8f2-8523-46fc-8fc9-87e630cbe295","init":{"model":"gemini-3.8-flash-high"}}'
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"27a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":1,"state":"DONE","step_type":"tool","usage":{"input_tokens":100,"output_tokens":10,"cache_read_tokens":20,"total_tokens":110}}}'
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"27a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":1,"state":"DONE","step_type":"tool","usage":{"input_tokens":120,"output_tokens":12,"cache_read_tokens":20,"total_tokens":132}}}'
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"27a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"working","usage":{"input_tokens":50,"output_tokens":5,"cache_read_tokens":10,"total_tokens":55}}}'
+sleep 60
+`
+}
+
+func TestAntigravityBackendStreamJSONCapturesUsage(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "agy")
+	writeTestExecutable(t, fakePath, []byte(fakeAgyStreamJSONScript()))
+
+	backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+	if err != nil {
+		t.Fatalf("new antigravity backend: %v", err)
+	}
+	session, err := backend.Execute(context.Background(), "prompt-ignored", ExecOptions{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var streamed strings.Builder
+	for msg := range session.Messages {
+		if msg.Type == MessageText {
+			streamed.WriteString(msg.Content)
+		}
+	}
+	result, ok := <-session.Result
+	if !ok {
+		t.Fatal("result channel closed without a value")
+	}
+	if result.Status != "completed" || result.Output != "Hello\n" {
+		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
+	}
+	if streamed.String() != "Hello\n" {
+		t.Fatalf("streamed output = %q, want %q", streamed.String(), "Hello\n")
+	}
+	if result.SessionID != "07a6d8f2-8523-46fc-8fc9-87e630cbe295" {
+		t.Fatalf("session id = %q", result.SessionID)
+	}
+	usage, ok := result.Usage["Gemini 3.8 Flash (High)"]
+	if !ok {
+		t.Fatalf("usage missing model key: %#v", result.Usage)
+	}
+	// result.usage is the authoritative aggregate. Adding the two completed
+	// steps on top would double-count the turn.
+	want := TokenUsage{InputTokens: 700, OutputTokens: 54, CacheReadTokens: 400}
+	if usage != want {
+		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
+func TestAntigravityStreamUsageNormalizesOnlyWithTotalEvidence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  antigravityStreamUsage
+		want TokenUsage
+	}{
+		{
+			name: "inclusive cached input",
+			raw:  antigravityStreamUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, TotalTokens: 120},
+			want: TokenUsage{InputTokens: 60, OutputTokens: 20, CacheReadTokens: 40},
+		},
+		{
+			name: "exclusive or unknown total stays unchanged",
+			raw:  antigravityStreamUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40, TotalTokens: 160},
+			want: TokenUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 40},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.raw.tokenUsage(); got != tt.want {
+				t.Fatalf("tokenUsage() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadAntigravitySelectedModelPrecedence(t *testing.T) {
+	t.Parallel()
+
+	logPath := filepath.Join(t.TempDir(), "agy.log")
+	if err := os.WriteFile(logPath, []byte(
+		`I0903 12:00:00 model_config_manager.go:311] Propagating selected model override to backend: label="Gemini 3.8 Flash (High)"`+"\n",
+	), 0o600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	if got := readAntigravitySelectedModel(logPath, "gemini-stream-model", "gemini-configured-model"); got != "gemini-stream-model" {
+		t.Fatalf("stream model = %q", got)
+	}
+	if got := readAntigravitySelectedModel(logPath, "", "gemini-configured-model"); got != "Gemini 3.8 Flash (High)" {
+		t.Fatalf("log model = %q", got)
+	}
+	if got := readAntigravitySelectedModel("", "", "gemini-configured-model"); got != "gemini-configured-model" {
+		t.Fatalf("configured model = %q", got)
+	}
+	if got := readAntigravitySelectedModel("", "", ""); got != "unknown" {
+		t.Fatalf("fallback model = %q", got)
+	}
+}
+
+func TestAntigravityResultStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"SUCCESS":        "completed",
+		"completed":      "completed",
+		"CANCELLED":      "cancelled",
+		"canceled":       "cancelled",
+		"ABORTED":        "aborted",
+		"TIMEOUT":        "timeout",
+		"timed_out":      "timeout",
+		"provider_error": "failed",
+	}
+	for input, want := range tests {
+		if got := antigravityResultStatus(input); got != want {
+			t.Errorf("antigravityResultStatus(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestAntigravityBackendReportsStructuredFailureUsage(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "agy")
+	writeTestExecutable(t, fakePath, []byte(fakeAgyFailedStreamJSONScript()))
+	backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+	if err != nil {
+		t.Fatalf("new antigravity backend: %v", err)
+	}
+	session, err := backend.Execute(context.Background(), "prompt-ignored", ExecOptions{Model: ""})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.Status != "failed" || result.Error != "provider failed" {
+		t.Fatalf("result = status %q error %q", result.Status, result.Error)
+	}
+	want := TokenUsage{InputTokens: 3, OutputTokens: 3, CacheReadTokens: 7, CacheWriteTokens: 2}
+	if got := result.Usage["unknown"]; got != want {
+		t.Fatalf("usage = %+v, want %+v", got, want)
+	}
+}
+
+func TestAntigravityBackendSumsCompletedStepsWhenCancelled(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "agy")
+	writeTestExecutable(t, fakePath, []byte(fakeAgyCancelledStreamJSONScript()))
+	backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+	if err != nil {
+		t.Fatalf("new antigravity backend: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for msg := range session.Messages {
+		if msg.Type == MessageText && msg.Content == "working" {
+			cancel()
+		}
+	}
+	result := <-session.Result
+	if result.Status != "aborted" {
+		t.Fatalf("status = %q, want aborted (error=%q)", result.Status, result.Error)
+	}
+	// step 1's second DONE event replaces its first snapshot; step 2 is then
+	// added once. Both cache counts are moved out of ordinary input.
+	want := TokenUsage{InputTokens: 140, OutputTokens: 17, CacheReadTokens: 30}
+	if got := result.Usage["gemini-3.8-flash-high"]; got != want {
+		t.Fatalf("usage = %+v, want %+v", got, want)
 	}
 }
