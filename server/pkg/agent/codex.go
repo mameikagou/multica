@@ -3493,7 +3493,7 @@ func (c *codexClient) updateThreadTokenUsage(params map[string]any) {
 	}
 	c.usageTotal = total
 	c.usageTotalSet = true
-	c.usage.InputTokens += codexUncachedInputTokens(delta.InputTokens, delta.CachedInputTokens)
+	c.usage.InputTokens += codexPlainInputTokens(delta.InputTokens, delta.CachedInputTokens, delta.CacheWriteInputTokens)
 	c.usage.OutputTokens += delta.OutputTokens + delta.ReasoningOutputTokens
 	c.usage.CacheReadTokens += delta.CachedInputTokens
 	c.usage.CacheWriteTokens += delta.CacheWriteInputTokens
@@ -3559,6 +3559,15 @@ func codexUncachedInputTokens(inputTokens, cachedInputTokens int64) int64 {
 		return 0
 	}
 	return uncached
+}
+
+// codexPlainInputTokens removes both cache details from Codex's raw input
+// total, which includes cache-read and cache-write input in v2 and JSONL usage.
+func codexPlainInputTokens(inputTokens, cacheReadTokens, cacheWriteTokens int64) int64 {
+	return codexUncachedInputTokens(
+		codexUncachedInputTokens(inputTokens, cacheReadTokens),
+		cacheWriteTokens,
+	)
 }
 
 // codexInt64 returns the first non-zero int64 value from the map for the given keys.
@@ -3855,11 +3864,13 @@ func parseCodexSessionFileSince(path string, startTime time.Time, resumed bool) 
 	if !finalUsageFound {
 		return nil
 	}
-	cachedTokens := finalUsage.CachedInputTokens
+	cacheReadTokens := finalUsage.CachedInputTokens
+	cacheWriteTokens := finalUsage.CacheWriteInputTokens
 	result.usage = TokenUsage{
-		InputTokens:     codexUncachedInputTokens(finalUsage.InputTokens, cachedTokens),
-		OutputTokens:    finalUsage.OutputTokens + finalUsage.ReasoningOutputTokens,
-		CacheReadTokens: cachedTokens,
+		InputTokens:      codexPlainInputTokens(finalUsage.InputTokens, cacheReadTokens, cacheWriteTokens),
+		OutputTokens:     finalUsage.OutputTokens + finalUsage.ReasoningOutputTokens,
+		CacheReadTokens:  cacheReadTokens,
+		CacheWriteTokens: cacheWriteTokens,
 	}
 	return &result
 }

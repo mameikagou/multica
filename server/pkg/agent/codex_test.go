@@ -1057,6 +1057,14 @@ func TestParseCodexSessionFileSinceResumeEdgeCases(t *testing.T) {
 			want: TokenUsage{InputTokens: 100, CacheReadTokens: 700},
 		},
 		{
+			name: "cache write remains separate from plain input",
+			lines: []string{
+				`{"timestamp":"2026-07-13T00:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":300,"cache_write_input_tokens":100}}}}`,
+				`{"timestamp":"2026-07-13T00:00:12Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1250,"cached_input_tokens":380,"cache_write_input_tokens":110}}}}`,
+			},
+			want: TokenUsage{InputTokens: 160, CacheReadTokens: 80, CacheWriteTokens: 10},
+		},
+		{
 			name: "counter reset accumulates every segment",
 			lines: []string{
 				`{"timestamp":"2026-07-13T00:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":50}}}}`,
@@ -3866,7 +3874,7 @@ func TestCodexThreadTokenUsageUpdatedAccumulatesCurrentTurnResponses(t *testing.
 	c.usageMu.Lock()
 	got := c.usage
 	c.usageMu.Unlock()
-	want := (TokenUsage{InputTokens: 170, OutputTokens: 35, CacheReadTokens: 80, CacheWriteTokens: 10})
+	want := (TokenUsage{InputTokens: 160, OutputTokens: 35, CacheReadTokens: 80, CacheWriteTokens: 10})
 	if got != want {
 		t.Fatalf("multi-response usage = %+v, want %+v", got, want)
 	}
