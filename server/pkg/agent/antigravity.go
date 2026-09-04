@@ -75,6 +75,8 @@ type antigravityStreamEvent struct {
 	Result     *antigravityStreamResult     `json:"result"`
 }
 
+const antigravityNetworkIssueError = "There was a network issue connecting to the server, please try again."
+
 func (u antigravityStreamUsage) hasTokens() bool {
 	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0 || u.CacheWriteTokens > 0
 }
@@ -117,6 +119,13 @@ func antigravityResultStatus(status string) string {
 	default:
 		return "failed"
 	}
+}
+
+func antigravityCompletedDespiteTrailingNetworkError(providerError, response string, agentResponseDone bool, activeSteps int) bool {
+	return strings.EqualFold(strings.TrimSpace(providerError), antigravityNetworkIssueError) &&
+		strings.TrimSpace(response) != "" &&
+		agentResponseDone &&
+		activeSteps == 0
 }
 
 var antigravitySelectedModelRe = regexp.MustCompile(
@@ -229,6 +238,8 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 		var streamResponse string
 		var streamResultUsage *antigravityStreamUsage
 		streamStepUsage := make(map[int]TokenUsage)
+		activeStreamSteps := make(map[int]struct{})
+		streamAgentResponseDone := false
 		finalStatus := "completed"
 		var finalError string
 
@@ -250,6 +261,15 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 					}
 					if event.StepUpdate.ConversationID != "" {
 						streamSessionID = event.StepUpdate.ConversationID
+					}
+					switch strings.ToUpper(strings.TrimSpace(event.StepUpdate.State)) {
+					case "ACTIVE":
+						activeStreamSteps[event.StepUpdate.StepIndex] = struct{}{}
+					case "DONE":
+						delete(activeStreamSteps, event.StepUpdate.StepIndex)
+						if event.StepUpdate.StepType == "agent_response" {
+							streamAgentResponseDone = true
+						}
 					}
 					if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.TextDelta != "" {
 						output.WriteString(event.StepUpdate.TextDelta)
@@ -315,12 +335,19 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 			finalStatus = "aborted"
 			finalError = "execution cancelled"
 		} else if status := antigravityResultStatus(streamResultStatus); finalStatus == "completed" && status != "completed" {
-			// Prefer the provider's structured error even when agy also exits
-			// non-zero; the process status alone discards the actionable cause.
-			finalStatus = status
-			finalError = streamResultError
-			if finalError == "" {
-				finalError = fmt.Sprintf("agy returned status %s", streamResultStatus)
+			if antigravityCompletedDespiteTrailingNetworkError(streamResultError, streamResponse, streamAgentResponseDone, len(activeStreamSteps)) {
+				// agy can emit a complete DONE response and only then fail a
+				// follow-up network operation. Preserve the finished answer instead
+				// of presenting that trailing transport error as a failed turn.
+				b.cfg.Logger.Warn("agy reported a trailing network error after a completed response", "err", streamResultError)
+			} else {
+				// Prefer the provider's structured error even when agy also exits
+				// non-zero; the process status alone discards the actionable cause.
+				finalStatus = status
+				finalError = streamResultError
+				if finalError == "" {
+					finalError = fmt.Sprintf("agy returned status %s", streamResultStatus)
+				}
 			}
 		} else if waitErr != nil && finalStatus == "completed" {
 			finalStatus = "failed"
