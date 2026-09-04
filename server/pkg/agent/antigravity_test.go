@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -817,6 +818,18 @@ exit 1
 `
 }
 
+func fakeAgyTrailingNetworkErrorScript(responseDone bool) string {
+	state := "ACTIVE"
+	if responseDone {
+		state = "DONE"
+	}
+	return fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' '{"event":"step_update","step_update":{"conversation_id":"37a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":2,"state":"%s","step_type":"agent_response","text_delta":"Complete answer."}}'
+printf '%%s\n' '{"event":"result","result":{"conversation_id":"37a6d8f2-8523-46fc-8fc9-87e630cbe295","status":"ERROR","response":"Complete answer.","error":"There was a network issue connecting to the server, please try again."}}'
+exit 1
+`, state)
+}
+
 func fakeAgyCancelledStreamJSONScript() string {
 	return `#!/bin/sh
 printf '%s\n' '{"event":"init","conversation_id":"27a6d8f2-8523-46fc-8fc9-87e630cbe295","init":{"model":"gemini-3.8-flash-high"}}'
@@ -871,6 +884,56 @@ func TestAntigravityBackendStreamJSONCapturesUsage(t *testing.T) {
 	want := TokenUsage{InputTokens: 1100, OutputTokens: 54, CacheReadTokens: 400}
 	if usage != want {
 		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
+func TestAntigravityBackendIgnoresTrailingNetworkErrorAfterDoneResponse(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "agy")
+	writeTestExecutable(t, fakePath, []byte(fakeAgyTrailingNetworkErrorScript(true)))
+
+	backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+	if err != nil {
+		t.Fatalf("new antigravity backend: %v", err)
+	}
+	session, err := backend.Execute(context.Background(), "prompt-ignored", ExecOptions{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for range session.Messages {
+	}
+	result, ok := <-session.Result
+	if !ok {
+		t.Fatal("result channel closed without a value")
+	}
+	if result.Status != "completed" || result.Output != "Complete answer." || result.Error != "" {
+		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
+	}
+}
+
+func TestAntigravityBackendKeepsNetworkFailureForPartialResponse(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "agy")
+	writeTestExecutable(t, fakePath, []byte(fakeAgyTrailingNetworkErrorScript(false)))
+
+	backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+	if err != nil {
+		t.Fatalf("new antigravity backend: %v", err)
+	}
+	session, err := backend.Execute(context.Background(), "prompt-ignored", ExecOptions{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for range session.Messages {
+	}
+	result, ok := <-session.Result
+	if !ok {
+		t.Fatal("result channel closed without a value")
+	}
+	if result.Status != "failed" || result.Output != "Complete answer." || !strings.Contains(result.Error, antigravityNetworkIssueError) {
+		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
 	}
 }
 
