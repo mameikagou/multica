@@ -43,6 +43,9 @@ func TestMain(m *testing.M) {
 	case "async_launched_tool_result":
 		runFakeClaudeAsyncLaunchedToolResult()
 		os.Exit(0)
+	case "scheduled_loop":
+		runFakeClaudeScheduledLoop()
+		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown CLAUDE_FAKE_MODE: %q\n", mode)
 		os.Exit(2)
@@ -153,6 +156,48 @@ func runFakeClaudeAsyncLaunchedToolResult() {
 	fmt.Println(`{"type":"system","session_id":"sess-async-launched"}`)
 	fmt.Println(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-async","content":{"status":"async_launched","message":"background task launched"}}]}}`)
 	fmt.Println(`{"type":"result","subtype":"success","is_error":false,"session_id":"sess-async-launched","result":"parent turn completed early"}`)
+}
+
+// runFakeClaudeScheduledLoop reproduces Claude Code's dynamic /loop protocol:
+// a successful ScheduleWakeup ends the current tick with a normal result, the
+// process stays idle until the timer fires, and a later tick stops the loop and
+// emits the terminal result. Reading stdin concurrently lets the fake fail
+// immediately if Multica closes it after the intermediate result.
+func runFakeClaudeScheduledLoop() {
+	reader := bufio.NewReader(os.Stdin)
+	if _, err := reader.ReadString('\n'); err != nil {
+		fmt.Fprintf(os.Stderr, "read prompt: %v\n", err)
+		os.Exit(51)
+	}
+
+	fmt.Println(`{"type":"system","session_id":"sess-loop"}`)
+	fmt.Println(`{"type":"assistant","message":{"role":"assistant","model":"claude-test","content":[{"type":"tool_use","id":"call-arm","name":"ScheduleWakeup","input":{"delaySeconds":60,"prompt":"repeat"}}]}}`)
+	fmt.Println(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-arm","content":"Next wakeup scheduled"}]}}`)
+	fmt.Println(`{"type":"result","subtype":"success","is_error":false,"session_id":"sess-loop","result":"first tick","modelUsage":{"claude-test":{"inputTokens":10,"outputTokens":1}}}`)
+
+	eof := make(chan error, 1)
+	go func() {
+		_, err := reader.ReadByte()
+		eof <- err
+	}()
+	select {
+	case err := <-eof:
+		fmt.Fprintf(os.Stderr, "stdin closed before scheduled wakeup: %v\n", err)
+		os.Exit(52)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	fmt.Println(`{"type":"assistant","message":{"role":"assistant","model":"claude-test","content":[{"type":"tool_use","id":"call-stop","name":"ScheduleWakeup","input":{"stop":true}}]}}`)
+	fmt.Println(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-stop","content":"Loop stopped"}]}}`)
+	fmt.Println(`{"type":"assistant","message":{"role":"assistant","model":"claude-test","content":[{"type":"text","text":"second tick finished"}]}}`)
+	fmt.Println(`{"type":"result","subtype":"success","is_error":false,"session_id":"sess-loop","result":"second tick finished","modelUsage":{"claude-test":{"inputTokens":20,"outputTokens":2}}}`)
+
+	select {
+	case <-eof:
+	case <-time.After(2 * time.Second):
+		fmt.Fprintln(os.Stderr, "stdin stayed open after ScheduleWakeup stop")
+		os.Exit(53)
+	}
 }
 
 // TestClaudeExecuteDoesNotDeadlockOnStartupStdoutBurst verifies that the
@@ -357,5 +402,57 @@ func TestClaudeExecuteFailsLoudlyOnAsyncLaunchedToolResult(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for result — claude backend did not fail async_launched tool result")
+	}
+}
+
+func TestClaudeExecuteKeepsScheduledLoopAliveAcrossResults(t *testing.T) {
+	t.Parallel()
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
+	backend, err := New("claude", Config{
+		ExecutablePath: self,
+		Env:            map[string]string{"CLAUDE_FAKE_MODE": "scheduled_loop", "IS_SANDBOX": "1"},
+		Logger:         slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("new claude backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	session, err := backend.Execute(ctx, "/loop 1m continue", ExecOptions{Timeout: 8 * time.Second})
+	if err != nil {
+		t.Fatalf("execute returned error: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		if result.Status != "completed" {
+			t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
+		}
+		if result.Output != "second tick finished" {
+			t.Fatalf("expected the terminal loop tick, got %q", result.Output)
+		}
+		if result.SessionID != "sess-loop" {
+			t.Fatalf("expected session id sess-loop, got %q", result.SessionID)
+		}
+		wantUsage := TokenUsage{InputTokens: 30, OutputTokens: 3}
+		if got := result.Usage["claude-test"]; got != wantUsage {
+			t.Fatalf("loop usage = %+v, want %+v", got, wantUsage)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for scheduled loop — Claude stdin was not managed across result events")
 	}
 }
