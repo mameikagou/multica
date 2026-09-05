@@ -186,7 +186,9 @@ func runFakeClaudeScheduledLoop() {
 	fmt.Println(`{"type":"assistant","message":{"role":"assistant","model":"claude-test","content":[{"type":"tool_use","id":"call-stop","name":"ScheduleWakeup","input":{"stop":true}}]}}`)
 	fmt.Println(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-stop","content":"Loop stopped"}]}}`)
 	fmt.Println(`{"type":"assistant","message":{"role":"assistant","model":"claude-test","content":[{"type":"text","text":"second tick finished"}]}}`)
-	fmt.Println(`{"type":"result","subtype":"success","is_error":false,"session_id":"sess-loop","result":"second tick finished","modelUsage":{"claude-test":{"inputTokens":20,"outputTokens":2}}}`)
+	// modelUsage is cumulative for the lifetime of the stream-json process:
+	// this snapshot already includes the first tick's 10 input / 1 output.
+	fmt.Println(`{"type":"result","subtype":"success","is_error":false,"session_id":"sess-loop","result":"second tick finished","modelUsage":{"claude-test":{"inputTokens":30,"outputTokens":3}}}`)
 
 	select {
 	case <-eof:
