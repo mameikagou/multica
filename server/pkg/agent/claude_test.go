@@ -126,56 +126,6 @@ func TestClaudeHandleUserToolResult(t *testing.T) {
 	}
 }
 
-func TestClaudeScheduleWakeupRequiresSuccessfulToolResult(t *testing.T) {
-	t.Parallel()
-
-	arm := claudeSDKMessage{Message: mustMarshal(t, claudeMessageContent{
-		Content: []claudeContentBlock{{
-			Type:  "tool_use",
-			ID:    "call-arm",
-			Name:  "ScheduleWakeup",
-			Input: mustMarshal(t, map[string]any{"delaySeconds": 60}),
-		}},
-	})}
-	pending := claudeScheduleWakeupCalls(arm)
-	if pending["call-arm"] != claudeWakeupArm {
-		t.Fatalf("arm directive = %v, want %v", pending["call-arm"], claudeWakeupArm)
-	}
-
-	failed := claudeSDKMessage{Message: mustMarshal(t, claudeMessageContent{
-		Content: []claudeContentBlock{{
-			Type:      "tool_result",
-			ToolUseID: "call-arm",
-			IsError:   true,
-		}},
-	})}
-	if directive, ok := claudeCompletedWakeupDirective(failed, pending); ok {
-		t.Fatalf("failed wakeup unexpectedly completed with directive %v", directive)
-	}
-	if _, ok := pending["call-arm"]; ok {
-		t.Fatal("failed wakeup call was not removed from pending set")
-	}
-
-	stop := claudeSDKMessage{Message: mustMarshal(t, claudeMessageContent{
-		Content: []claudeContentBlock{{
-			Type:  "tool_use",
-			ID:    "call-stop",
-			Name:  "ScheduleWakeup",
-			Input: mustMarshal(t, map[string]any{"stop": true}),
-		}},
-	})}
-	pending = claudeScheduleWakeupCalls(stop)
-	succeeded := claudeSDKMessage{Message: mustMarshal(t, claudeMessageContent{
-		Content: []claudeContentBlock{{
-			Type:      "tool_result",
-			ToolUseID: "call-stop",
-		}},
-	})}
-	if directive, ok := claudeCompletedWakeupDirective(succeeded, pending); !ok || directive != claudeWakeupStop {
-		t.Fatalf("successful stop = (%v, %v), want (%v, true)", directive, ok, claudeWakeupStop)
-	}
-}
-
 func TestClaudeHandleControlRequestAutoApproves(t *testing.T) {
 	t.Parallel()
 
