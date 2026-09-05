@@ -170,8 +170,6 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		var sessionID string
 		sawAsyncLaunch := false
 		usage := make(map[string]TokenUsage)
-		pendingWakeupCalls := make(map[string]claudeWakeupDirective)
-		keepAliveAfterResult := false
 		eventCount := 0
 		invalidEventCount := 0
 		assistantEventCount := 0
@@ -234,15 +232,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					unreadableAssistantCount++
 				}
 				lastAssistantText = turn.resolveFallback(lastAssistantText)
-				for callID, directive := range claudeScheduleWakeupCalls(msg) {
-					pendingWakeupCalls[callID] = directive
-				}
 			case "user":
 				if b.handleUser(msg, msgCh) {
 					sawAsyncLaunch = true
-				}
-				if directive, ok := claudeCompletedWakeupDirective(msg, pendingWakeupCalls); ok {
-					keepAliveAfterResult = directive == claudeWakeupArm
 				}
 			case "system":
 				if msg.SessionID != "" {
@@ -256,30 +248,12 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				terminalReasonError = claudeTerminalReasonFailure(msg.TerminalReason, msg.ResultText)
 				sessionID = msg.SessionID
 				if resultUsage := claudeResultUsage(msg, opts.Model); len(resultUsage) > 0 {
-					// Claude Code reports modelUsage as a cumulative snapshot for
-					// the lifetime of this stream-json process. Keep the newest
-					// snapshot instead of summing snapshots across scheduled ticks.
+					// The terminal usage snapshot replaces assistant-event totals.
 					usage = resultUsage
 				}
-				if keepAliveAfterResult && !resultIsError && terminalReasonError == "" {
-					// Claude Code's dynamic /loop emits an ordinary result at the end
-					// of every tick, then waits for its in-process ScheduleWakeup timer.
-					// Closing stdin here destroys that timer and every persistent
-					// Monitor even though the tool just reported a successful wakeup.
-					// Keep the stream-json session alive for exactly one more tick; the
-					// next tick must re-arm ScheduleWakeup or the next result closes it.
-					b.cfg.Logger.Info("claude scheduled loop armed; keeping stream-json session open",
-						"session_id", sessionID,
-					)
-					keepAliveAfterResult = false
-					sawResult = false
-					resultIsError = false
-					finalResultText = ""
-					terminalReasonError = ""
-					lastAssistantText = ""
-					continue
-				}
-				keepAliveAfterResult = false
+				// A result completes this headless turn, including after a successful
+				// ScheduleWakeup. The CLI may exit without another result; retain
+				// the output and session ID so a separate task can resume it.
 				closeStdin()
 			case "log":
 				if msg.Log != nil {
@@ -703,72 +677,6 @@ type claudeContentBlock struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
-}
-
-type claudeWakeupDirective uint8
-
-const (
-	claudeWakeupNone claudeWakeupDirective = iota
-	claudeWakeupArm
-	claudeWakeupStop
-)
-
-// claudeScheduleWakeupCalls records the intent of ScheduleWakeup tool calls by
-// call id. The intent is not applied until the corresponding tool_result says
-// the harness accepted it; otherwise a rejected tool call could keep a
-// headless Claude process waiting forever with no wakeup pending.
-func claudeScheduleWakeupCalls(msg claudeSDKMessage) map[string]claudeWakeupDirective {
-	var content claudeMessageContent
-	if err := json.Unmarshal(msg.Message, &content); err != nil {
-		return nil
-	}
-
-	calls := make(map[string]claudeWakeupDirective)
-	for _, block := range content.Content {
-		if block.Type != "tool_use" || block.Name != "ScheduleWakeup" || block.ID == "" {
-			continue
-		}
-		directive := claudeWakeupArm
-		var input struct {
-			Stop bool `json:"stop"`
-		}
-		if len(block.Input) > 0 && json.Unmarshal(block.Input, &input) == nil && input.Stop {
-			directive = claudeWakeupStop
-		}
-		calls[block.ID] = directive
-	}
-	return calls
-}
-
-// claudeCompletedWakeupDirective returns the last successfully completed
-// ScheduleWakeup directive in a user tool-result event. Claude normally emits
-// one result per event, but preserving wire order makes the behavior explicit
-// if a future CLI batches them.
-func claudeCompletedWakeupDirective(msg claudeSDKMessage, pending map[string]claudeWakeupDirective) (claudeWakeupDirective, bool) {
-	var content claudeMessageContent
-	if err := json.Unmarshal(msg.Message, &content); err != nil {
-		return claudeWakeupNone, false
-	}
-
-	directive := claudeWakeupNone
-	found := false
-	for _, block := range content.Content {
-		if block.Type != "tool_result" {
-			continue
-		}
-		pendingDirective, ok := pending[block.ToolUseID]
-		if !ok {
-			continue
-		}
-		delete(pending, block.ToolUseID)
-		if block.IsError {
-			continue
-		}
-		directive = pendingDirective
-		found = true
-	}
-	return directive, found
 }
 
 type claudeControlRequestPayload struct {
