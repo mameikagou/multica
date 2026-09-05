@@ -171,7 +171,6 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		var sessionID string
 		sawAsyncLaunch := false
 		usage := make(map[string]TokenUsage)
-		turnUsage := make(map[string]TokenUsage)
 		pendingWakeupCalls := make(map[string]claudeWakeupDirective)
 		keepAliveAfterResult := false
 		eventCount := 0
@@ -230,7 +229,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
-				turn := b.handleAssistant(msg, msgCh, turnUsage)
+				turn := b.handleAssistant(msg, msgCh, usage)
 				toolUseCount += turn.toolUses
 				if !turn.understood {
 					unreadableAssistantCount++
@@ -258,10 +257,11 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				terminalReasonError = claudeTerminalReasonFailure(msg.TerminalReason, msg.ResultText)
 				sessionID = msg.SessionID
 				if resultUsage := claudeResultUsage(msg, opts.Model); len(resultUsage) > 0 {
-					turnUsage = resultUsage
+					// Claude Code reports modelUsage as a cumulative snapshot for
+					// the lifetime of this stream-json process. Keep the newest
+					// snapshot instead of summing snapshots across scheduled ticks.
+					usage = resultUsage
 				}
-				mergeClaudeUsage(usage, turnUsage)
-				turnUsage = make(map[string]TokenUsage)
 				if keepAliveAfterResult && !resultIsError && terminalReasonError == "" {
 					// Claude Code's dynamic /loop emits an ordinary result at the end
 					// of every tick, then waits for its in-process ScheduleWakeup timer.
@@ -303,7 +303,6 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 
 		closeStdin()
-		mergeClaudeUsage(usage, turnUsage)
 
 		// Wait for process exit, then release the cancellation handler.
 		exitErr := cmd.Wait()
@@ -771,17 +770,6 @@ func claudeCompletedWakeupDirective(msg claudeSDKMessage, pending map[string]cla
 		found = true
 	}
 	return directive, found
-}
-
-func mergeClaudeUsage(dst, src map[string]TokenUsage) {
-	for model, incoming := range src {
-		current := dst[model]
-		current.InputTokens += incoming.InputTokens
-		current.OutputTokens += incoming.OutputTokens
-		current.CacheReadTokens += incoming.CacheReadTokens
-		current.CacheWriteTokens += incoming.CacheWriteTokens
-		dst[model] = current
-	}
 }
 
 type claudeControlRequestPayload struct {
