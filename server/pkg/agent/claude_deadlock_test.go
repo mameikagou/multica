@@ -43,6 +43,9 @@ func TestMain(m *testing.M) {
 	case "scheduled_wakeup_exit", "scheduled_wakeup_eof", "scheduled_wakeup_no_result":
 		runFakeClaudeScheduledWakeup(mode)
 		os.Exit(0)
+	case "native_loop", "native_loop_exit", "native_loop_incomplete", "native_loop_init_incomplete", "native_loop_cancel", "native_cron":
+		runFakeClaudeNativeLoop(mode)
+		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown CLAUDE_FAKE_MODE: %q\n", mode)
 		os.Exit(2)
