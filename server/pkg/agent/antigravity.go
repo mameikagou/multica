@@ -121,11 +121,10 @@ func antigravityResultStatus(status string) string {
 	}
 }
 
-func antigravityCompletedDespiteTrailingNetworkError(providerError, response string, agentResponseDone bool, activeSteps int) bool {
+func antigravityCompletedDespiteTrailingNetworkError(providerError, response string, agentResponseDone bool) bool {
 	return strings.EqualFold(strings.TrimSpace(providerError), antigravityNetworkIssueError) &&
 		strings.TrimSpace(response) != "" &&
-		agentResponseDone &&
-		activeSteps == 0
+		agentResponseDone
 }
 
 var antigravitySelectedModelRe = regexp.MustCompile(
@@ -245,7 +244,6 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 		var streamResponse string
 		var streamResultUsage *antigravityStreamUsage
 		streamStepUsage := make(map[int]TokenUsage)
-		activeStreamSteps := make(map[int]struct{})
 		streamAgentResponseDone := false
 		finalStatus := "completed"
 		var finalError string
@@ -269,14 +267,8 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 					if event.StepUpdate.ConversationID != "" {
 						streamSessionID = event.StepUpdate.ConversationID
 					}
-					switch strings.ToUpper(strings.TrimSpace(event.StepUpdate.State)) {
-					case "ACTIVE":
-						activeStreamSteps[event.StepUpdate.StepIndex] = struct{}{}
-					case "DONE":
-						delete(activeStreamSteps, event.StepUpdate.StepIndex)
-						if event.StepUpdate.StepType == "agent_response" {
-							streamAgentResponseDone = true
-						}
+					if strings.EqualFold(event.StepUpdate.State, "done") && event.StepUpdate.StepType == "agent_response" {
+						streamAgentResponseDone = true
 					}
 					if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.TextDelta != "" {
 						output.WriteString(event.StepUpdate.TextDelta)
@@ -342,7 +334,7 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 			finalStatus = "aborted"
 			finalError = "execution cancelled"
 		} else if status := antigravityResultStatus(streamResultStatus); finalStatus == "completed" && status != "completed" {
-			if antigravityCompletedDespiteTrailingNetworkError(streamResultError, streamResponse, streamAgentResponseDone, len(activeStreamSteps)) {
+			if antigravityCompletedDespiteTrailingNetworkError(streamResultError, streamResponse, streamAgentResponseDone) {
 				// agy can emit a complete DONE response and only then fail a
 				// follow-up network operation. Preserve the finished answer instead
 				// of presenting that trailing transport error as a failed turn.
