@@ -830,6 +830,21 @@ exit 1
 `, state)
 }
 
+// fakeAgyTrailingNetworkErrorWithStaleActiveStepScript reproduces the real
+// agy 1.1.27 sequence from 2026-09-07: a background command reports ACTIVE,
+// is later cancelled through a separate manage_task step (so the original
+// step never receives DONE), and the agent still emits a complete DONE reply
+// before the exact trailing network error.
+func fakeAgyTrailingNetworkErrorWithStaleActiveStepScript() string {
+	return `#!/bin/sh
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"47a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":1,"state":"ACTIVE","step_type":"tool"}}'
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"47a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":2,"state":"DONE","step_type":"tool"}}'
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"47a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":3,"state":"DONE","step_type":"agent_response","text_delta":"Complete answer after cancelling the background task."}}'
+printf '%s\n' '{"event":"result","result":{"conversation_id":"47a6d8f2-8523-46fc-8fc9-87e630cbe295","status":"ERROR","response":"Complete answer after cancelling the background task.","error":"There was a network issue connecting to the server, please try again."}}'
+exit 1
+`
+}
+
 func fakeAgyCancelledStreamJSONScript() string {
 	return `#!/bin/sh
 printf '%s\n' '{"event":"init","conversation_id":"27a6d8f2-8523-46fc-8fc9-87e630cbe295","init":{"model":"gemini-3.8-flash-high"}}'
@@ -908,6 +923,31 @@ func TestAntigravityBackendIgnoresTrailingNetworkErrorAfterDoneResponse(t *testi
 		t.Fatal("result channel closed without a value")
 	}
 	if result.Status != "completed" || result.Output != "Complete answer." || result.Error != "" {
+		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
+	}
+}
+
+func TestAntigravityBackendIgnoresStaleActiveStepAfterDoneResponse(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "agy")
+	writeTestExecutable(t, fakePath, []byte(fakeAgyTrailingNetworkErrorWithStaleActiveStepScript()))
+
+	backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+	if err != nil {
+		t.Fatalf("new antigravity backend: %v", err)
+	}
+	session, err := backend.Execute(context.Background(), "prompt-ignored", ExecOptions{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for range session.Messages {
+	}
+	result, ok := <-session.Result
+	if !ok {
+		t.Fatal("result channel closed without a value")
+	}
+	if result.Status != "completed" || result.Output != "Complete answer after cancelling the background task." || result.Error != "" {
 		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
 	}
 }
