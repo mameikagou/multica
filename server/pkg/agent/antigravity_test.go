@@ -380,6 +380,9 @@ func fakeAgyTransientAuthScript() string {
 printf 'run\n' >> "$MULTICA_TEST_AGY_INVOCATIONS"
 count=$(wc -l < "$MULTICA_TEST_AGY_INVOCATIONS")
 if [ "$count" -eq 1 ]; then
+	printf 'Authentication required. Please visit the URL to log in:\n  <redacted-oauth-url>\n\n' >&2
+	printf 'Waiting for authentication (timeout 60s)...\n' >&2
+	printf 'Or, paste the authorization code here and press Enter:\n' >&2
   printf 'Error: authentication timed out.\n' >&2
   exit 1
 fi
@@ -401,6 +404,24 @@ func fakeAgyPartialAuthFailureScript() string {
 	return `#!/bin/sh
 printf 'run\n' >> "$MULTICA_TEST_AGY_INVOCATIONS"
 printf 'partial reply already emitted\n'
+printf 'Error: authentication timed out.\n' >&2
+exit 1
+`
+}
+
+func fakeAgyDispatchedAuthFailureScript() string {
+	return `#!/bin/sh
+printf 'run\n' >> "$MULTICA_TEST_AGY_INVOCATIONS"
+log=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --log-file) log="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$log" ]; then
+  printf 'I0907 03:26:09.000000 1 printmode.go:156] Print mode: conversation=44a57718-801c-41e7-9691-3225be2b1cb8, sending message\n' >> "$log"
+fi
 printf 'Error: authentication timed out.\n' >&2
 exit 1
 `
@@ -529,6 +550,39 @@ func TestAntigravityBackendDoesNotRetryAuthTimeoutAfterOutput(t *testing.T) {
 	}
 	if got := readInvocationCount(t, recordPath); got != 1 {
 		t.Fatalf("an attempt that emitted output must not be retried: got %d invocations", got)
+	}
+}
+
+func TestAntigravityBackendDoesNotRetryAuthTimeoutAfterDispatch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	fakePath := filepath.Join(dir, "agy")
+	recordPath := filepath.Join(dir, "invocations")
+	writeTestExecutable(t, fakePath, []byte(fakeAgyDispatchedAuthFailureScript()))
+
+	backend, err := New("antigravity", Config{
+		ExecutablePath: fakePath,
+		Env:            map[string]string{"MULTICA_TEST_AGY_INVOCATIONS": recordPath},
+		Logger:         quietAntigravityLogger(),
+	})
+	if err != nil {
+		t.Fatalf("new antigravity backend: %v", err)
+	}
+
+	session, err := backend.Execute(context.Background(), "prompt-ignored", ExecOptions{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	result := awaitAntigravityResult(t, session)
+	if result.Status != "failed" {
+		t.Fatalf("expected post-dispatch failure to remain failed, got status=%q error=%q", result.Status, result.Error)
+	}
+	if result.SessionID != "44a57718-801c-41e7-9691-3225be2b1cb8" {
+		t.Fatalf("expected dispatched conversation id to be preserved, got %q", result.SessionID)
+	}
+	if got := readInvocationCount(t, recordPath); got != 1 {
+		t.Fatalf("an attempt that dispatched the prompt must not be retried: got %d invocations", got)
 	}
 }
 

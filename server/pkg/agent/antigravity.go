@@ -60,7 +60,7 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 	// Validate any source when the normal discovery path already cached a live
 	// catalog, but never refresh that catalog here: starting `agy models`
 	// immediately before `agy -p`
-	// intermittently makes agy 1.1.26 on WSL/file credential storage ignore a
+	// intermittently makes agy 1.1.26 and 1.1.27 on WSL/file credential storage ignore a
 	// valid token and enter its 60s OAuth flow (google-antigravity/
 	// antigravity-cli#944). On a cache miss, fail open and let agy resolve the
 	// model rather than putting a second agy process on the task's launch path.
