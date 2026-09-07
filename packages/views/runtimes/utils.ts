@@ -528,12 +528,11 @@ function canonicalCandidates(model: string): string[] {
   // semantic, so we leave `gpt-5.4` etc. alone.
   const canonAnthropic = (s: string) =>
     s.startsWith("claude-") ? s.replace(/\./g, "-") : s;
-  // Some routing CLIs append the inference mode to Claude's SKU even though
-  // Anthropic prices thinking and non-thinking requests under the same model.
-  // Strip only these exact trailing mode tokens and only for Claude IDs; model
-  // suffixes from other vendors may identify genuinely different products.
+  // Some routing CLIs append `-thinking` to Claude's SKU even though Anthropic
+  // prices the request under the base model. Only that observed identifier is
+  // normalized; other suffixes may identify genuinely different products.
   const stripClaudeMode = (s: string) =>
-    s.startsWith("claude-") ? s.replace(/-(thinking|non-thinking)$/, "") : s;
+    s.startsWith("claude-") ? s.replace(/-thinking$/, "") : s;
   // Trailing context-window tag (`claude-opus-4-7[1m]`). Same family,
   // same price tier — see resolver comment above for the 1M-context
   // pricing trade-off.

@@ -20,6 +20,7 @@ import {
   todayIso,
   weekStartIso,
   type DailyTokenData,
+  type Priceable,
 } from "../runtimes/utils";
 import type {
   DailyTimeData,
@@ -150,7 +151,35 @@ export interface DashboardTokenTotals {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  costEstimate: CostEstimate;
   taskCount: number;
+}
+
+export type CostCompleteness = "exact" | "partial" | "unknown";
+
+export interface CostEstimate {
+  /** Cost from rows whose model pricing is known. This is a lower bound unless exact. */
+  knownCost: number;
+  completeness: CostCompleteness;
+}
+
+/**
+ * One cost contract for every dashboard surface. A numeric zero is only free
+ * when completeness is exact; otherwise it means the recorded usage cannot be
+ * priced yet. Custom rates participate because estimateCost and
+ * hasUnpricedUsage resolve through the same pricing store.
+ */
+export function summarizeCost(usage: readonly Priceable[]): CostEstimate {
+  let knownCost = 0;
+  let hasGap = false;
+  for (const row of usage) {
+    knownCost += estimateCost(row);
+    hasGap ||= hasUnpricedUsage(row);
+  }
+  return {
+    knownCost,
+    completeness: hasGap ? (knownCost > 0 ? "partial" : "unknown") : "exact",
+  };
 }
 
 // Whole-window totals for the KPI tiles. taskCount sums DISTINCT task counts
@@ -159,7 +188,8 @@ export interface DashboardTokenTotals {
 // acceptable for a KPI ("rough volume") and the per-agent run-time card
 // gives the precise figure.
 export function computeDailyTotals(usage: DashboardUsageDaily[]): DashboardTokenTotals {
-  return usage.reduce<DashboardTokenTotals>(
+  const costEstimate = summarizeCost(usage);
+  const totals = usage.reduce<Omit<DashboardTokenTotals, "costEstimate">>(
     (acc, u) => ({
       input: acc.input + u.input_tokens,
       output: acc.output + u.output_tokens,
@@ -170,6 +200,7 @@ export function computeDailyTotals(usage: DashboardUsageDaily[]): DashboardToken
     }),
     { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, taskCount: 0 },
   );
+  return { ...totals, costEstimate };
 }
 
 export interface AgentCostRow {
