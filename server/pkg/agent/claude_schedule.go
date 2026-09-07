@@ -2,6 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -78,7 +81,11 @@ func (s *claudeSchedules) observe(msg claudeSDKMessage, now time.Time) {
 			if json.Unmarshal(msg.ToolUseResult, &receipt) != nil || receipt.ID == "" || json.Unmarshal(call.Input, &input) != nil {
 				continue
 			}
-			schedule, err := cron.ParseStandard(input.Cron)
+			cronExpression, err := normalizeClaudeCron(input.Cron)
+			if err != nil {
+				continue
+			}
+			schedule, err := cron.ParseStandard(cronExpression)
 			if err != nil {
 				continue
 			}
@@ -126,9 +133,77 @@ func (s *claudeSchedules) waitingUntil() (time.Time, bool) {
 			jitter := min(entry.schedule.Next(next).Sub(next)/2, 30*time.Minute)
 			next = next.Add(jitter)
 		}
+		if entry.expires.Before(next) {
+			next = entry.expires
+		}
 		if until.IsZero() || next.Before(until) {
 			until = next
 		}
 	}
 	return until, !until.IsZero()
+}
+
+// normalizeClaudeCron converts Claude's Sunday value 7 into robfig/cron's
+// equivalent 0. Claude accepts both values, including 7 inside lists and
+// ascending numeric ranges; robfig's standard five-field parser accepts only
+// 0-6. Other fields and expressions pass through unchanged for the parser to
+// validate.
+func normalizeClaudeCron(expression string) (string, error) {
+	fields := strings.Fields(expression)
+	if len(fields) != 5 {
+		return "", fmt.Errorf("claude cron: expected 5 fields, got %d", len(fields))
+	}
+
+	parts := strings.Split(fields[4], ",")
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		values, changed, err := normalizeClaudeSundayPart(part)
+		if err != nil {
+			return "", err
+		}
+		if changed {
+			normalized = append(normalized, values...)
+		} else {
+			normalized = append(normalized, part)
+		}
+	}
+	fields[4] = strings.Join(normalized, ",")
+	return strings.Join(fields, " "), nil
+}
+
+func normalizeClaudeSundayPart(part string) ([]string, bool, error) {
+	if part == "7" {
+		return []string{"0"}, true, nil
+	}
+
+	rangePart, stepPart, hasStep := strings.Cut(part, "/")
+	startText, endText, hasRange := strings.Cut(rangePart, "-")
+	if !hasRange || endText != "7" {
+		return nil, false, nil
+	}
+	start, err := strconv.Atoi(startText)
+	if err != nil || start < 0 || start > 7 {
+		return nil, false, nil
+	}
+	step := 1
+	if hasStep {
+		step, err = strconv.Atoi(stepPart)
+		if err != nil || step <= 0 {
+			return nil, false, fmt.Errorf("claude cron: invalid weekday step %q", stepPart)
+		}
+	}
+
+	values := make([]string, 0, 8-start)
+	seen := make(map[int]bool, 8-start)
+	for day := start; day <= 7; day += step {
+		normalizedDay := day
+		if day == 7 {
+			normalizedDay = 0
+		}
+		if !seen[normalizedDay] {
+			values = append(values, strconv.Itoa(normalizedDay))
+			seen[normalizedDay] = true
+		}
+	}
+	return values, true, nil
 }

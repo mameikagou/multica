@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
 func scheduleEvent(typ, content, receipt string) claudeSDKMessage {
@@ -77,6 +79,46 @@ func TestClaudeSchedulesConsumeAndCancel(t *testing.T) {
 	}
 }
 
+func TestNormalizeClaudeCronSunday(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		expression string
+		want       string
+	}{
+		{name: "literal", expression: "0 9 * * 7", want: "0 9 * * 0"},
+		{name: "list", expression: "0 9 * * 1,3,7", want: "0 9 * * 1,3,0"},
+		{name: "range", expression: "0 9 * * 5-7", want: "0 9 * * 5,6,0"},
+		{name: "stepped range", expression: "0 9 * * 5-7/2", want: "0 9 * * 5,0"},
+		{name: "robfig range unchanged", expression: "0 9 * * 0-6", want: "0 9 * * 0-6"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeClaudeCron(tc.expression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("normalizeClaudeCron(%q) = %q, want %q", tc.expression, got, tc.want)
+			}
+			if _, err := cron.ParseStandard(got); err != nil {
+				t.Fatalf("normalized expression is not parseable: %v", err)
+			}
+		})
+	}
+}
+
+func TestClaudeSchedulesCapWaitAtSevenDayExpiry(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	var s claudeSchedules
+	s.observe(scheduleEvent("assistant", `{"type":"tool_use","id":"cron","name":"CronCreate","input":{"cron":"0 0 1 1 *"}}`, ""), now)
+	s.observe(scheduleEvent("user", `{"type":"tool_result","tool_use_id":"cron"}`, `{"id":"yearly","recurring":true}`), now)
+
+	got, ok := s.waitingUntil()
+	want := now.Add(7 * 24 * time.Hour)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("waitingUntil() = %v, %v, want seven-day expiry %v", got, ok, want)
+	}
+}
+
 // The fake owns its timer, just like native Claude. EOF before the second turn
 // cancels it, reproducing the adapter's former close-stdin-on-first-result bug.
 func runFakeClaudeNativeLoop(mode string) {
@@ -85,6 +127,11 @@ func runFakeClaudeNativeLoop(mode string) {
 		os.Exit(61)
 	}
 	fmt.Println(`{"type":"system","session_id":"native-session"}`)
+	if mode == "native_loop_buffer_full_exit" {
+		for i := 0; i < 300; i++ {
+			fmt.Printf("{\"type\":\"log\",\"log\":{\"level\":\"info\",\"message\":\"buffer-%d\"}}\n", i)
+		}
+	}
 	tool, input, receipt := "ScheduleWakeup", `{"delaySeconds":60}`, fmt.Sprintf(`{"scheduledFor":%d}`, time.Now().Add(80*time.Millisecond).UnixMilli())
 	if mode == "native_cron" {
 		tool = "CronCreate"
@@ -94,7 +141,7 @@ func runFakeClaudeNativeLoop(mode string) {
 	fmt.Printf("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"arm\",\"name\":%q,\"input\":%s}]}}\n", tool, input)
 	fmt.Printf("{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"arm\",\"content\":\"scheduled\"}]},\"tool_use_result\":%s}\n", receipt)
 	fmt.Println(`{"type":"result","session_id":"native-session","result":"first turn","modelUsage":{"k3-256k":{"inputTokens":10,"outputTokens":2}}}`)
-	if mode == "native_loop_exit" {
+	if mode == "native_loop_exit" || mode == "native_loop_buffer_full_exit" {
 		return
 	}
 	eof := make(chan struct{})
@@ -172,8 +219,8 @@ func TestClaudeExecuteNativeLoop(t *testing.T) {
 					t.Fatalf("incomplete new turn masked by previous result: %+v", result)
 				}
 			case "native_loop_exit":
-				if result.Status != "completed" || result.Output != "first turn" {
-					t.Fatalf("completed checkpoint lost at EOF: %+v", result)
+				if result.Status != "failed" || !strings.Contains(result.Error, "before the confirmed scheduled wakeup") {
+					t.Fatalf("lost native loop reported as success: %+v", result)
 				}
 			default:
 				if result.Status != "completed" || result.Output != "second turn" || result.Usage["k3-256k"].InputTokens != 20 {
@@ -181,5 +228,31 @@ func TestClaudeExecuteNativeLoop(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClaudeExecuteScheduledWaitDoesNotDependOnMessageConsumer(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := New("claude", Config{ExecutablePath: self, Env: map[string]string{"CLAUDE_FAKE_MODE": "native_loop_buffer_full_exit", "IS_SANDBOX": "1"}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "/loop check", ExecOptions{Model: "k3-256k", Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case result := <-session.Result:
+		if result.Status != "failed" || !strings.Contains(result.Error, "before the confirmed scheduled wakeup") {
+			t.Fatalf("unexpected result after unread full message buffer: %+v", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("result blocked behind the optional Messages consumer")
 	}
 }

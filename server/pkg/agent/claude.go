@@ -125,6 +125,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
+	liveness := &SessionLiveness{}
 
 	// procDone closes once cmd.Wait() returns, letting the cancellation handler
 	// skip a process that already exited and avoid signalling a dead/reused pid.
@@ -215,9 +216,10 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				return
 			}
 			// Retain the completed result throughout the scheduled wait. Reset
-			// only once a new main-thread turn starts, so EOF during the wait
-			// succeeds but an incomplete subsequent turn still fails.
+			// only once a new main-thread turn starts, so an incomplete subsequent
+			// turn cannot be masked by the previous checkpoint.
 			waitingForWakeup = false
+			liveness.clearWaitingUntil()
 			schedules.beginTurn(time.Now())
 			sawResult = false
 			finalResultText = ""
@@ -285,13 +287,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 				if until, pending := schedules.waitingUntil(); pending && !resultIsError && terminalReasonError == "" && !sawAsyncLaunch {
 					waitingForWakeup = true
+					liveness.setWaitingUntil(until)
 					b.cfg.Logger.Info("claude awaiting native scheduled wakeup", "session_id", sessionID, "waiting_until", until)
-					// This transition controls the daemon's watchdog, so unlike
-					// display-only events it must survive a full output buffer.
-					select {
-					case msgCh <- Message{Type: MessageStatus, Status: "waiting", SessionID: sessionID, WaitingUntil: until}:
-					case <-runCtx.Done():
-					}
+					trySend(msgCh, Message{Type: MessageStatus, Status: "waiting", SessionID: sessionID, WaitingUntil: until})
 					continue
 				}
 				closeStdin()
@@ -333,6 +331,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		completionGuardError := ""
 		if sawAsyncLaunch {
 			completionGuardError = "claude launched an async background task; Multica-managed runs require foreground execution"
+		} else if waitingForWakeup {
+			completionGuardError = "claude exited before the confirmed scheduled wakeup; the native loop can no longer continue"
 		}
 		finalStatus, finalOutput, finalError := finalizeStreamResult(
 			"claude",
@@ -403,7 +403,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 	}()
 
-	return &Session{Messages: msgCh, Result: resCh}, nil
+	return &Session{Messages: msgCh, Result: resCh, Liveness: liveness}, nil
 }
 
 func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage) assistantTurn {
