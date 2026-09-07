@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -146,6 +147,42 @@ type Session struct {
 	Messages <-chan Message
 	// Result receives exactly one value — the final outcome — then closes.
 	Result <-chan Result
+	// Liveness carries backend-owned watchdog state independently of Messages,
+	// which callers are allowed not to consume. It is nil for backends that do
+	// not need to defer the ordinary idle deadline.
+	Liveness *SessionLiveness
+}
+
+// SessionLiveness exposes read-only backend liveness state to the daemon. A
+// future WaitingUntil means the backend has positively confirmed a native
+// scheduled wait; zero restores the ordinary idle watchdog immediately.
+type SessionLiveness struct {
+	waitingUntilNanos atomic.Int64
+}
+
+func (s *SessionLiveness) setWaitingUntil(until time.Time) {
+	if s == nil {
+		return
+	}
+	s.waitingUntilNanos.Store(until.UnixNano())
+}
+
+func (s *SessionLiveness) clearWaitingUntil() {
+	if s != nil {
+		s.waitingUntilNanos.Store(0)
+	}
+}
+
+// WaitingUntil returns the current confirmed native-wait deadline.
+func (s *SessionLiveness) WaitingUntil() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	nanos := s.waitingUntilNanos.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // MessageType identifies the kind of Message.
@@ -172,8 +209,9 @@ type Message struct {
 	Status    string         // agent status string (Status)
 	Level     string         // log level (Log)
 	SessionID string         // backend session id (Status), for early resume-pointer pinning
-	// WaitingUntil defers the idle watchdog during a confirmed native scheduled
-	// wait. The normal idle budget resumes at this time; hard timeouts still apply.
+	// WaitingUntil presents a confirmed native scheduled wait to message
+	// consumers. Watchdog control uses Session.Liveness so this optional stream
+	// can fill or remain unread without blocking the backend.
 	WaitingUntil time.Time
 }
 
