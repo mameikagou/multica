@@ -92,7 +92,11 @@ func (s *claudeSchedules) observe(msg claudeSDKMessage, now time.Time) {
 			if s.crons == nil {
 				s.crons = make(map[string]claudeCron)
 			}
-			s.crons[receipt.ID] = claudeCron{schedule: schedule, next: schedule.Next(now), expires: now.Add(7 * 24 * time.Hour), recurring: receipt.Recurring}
+			entry := claudeCron{schedule: schedule, next: schedule.Next(now), recurring: receipt.Recurring}
+			if receipt.Recurring {
+				entry.expires = now.Add(7 * 24 * time.Hour)
+			}
+			s.crons[receipt.ID] = entry
 		case "CronDelete":
 			var receipt struct {
 				ID string `json:"id"`
@@ -105,14 +109,17 @@ func (s *claudeSchedules) observe(msg claudeSDKMessage, now time.Time) {
 	}
 }
 
-// A main-thread response after a due time consumes that scheduled fire. Early
-// responses (for example a task notification) leave future wakeups intact.
-func (s *claudeSchedules) beginTurn(now time.Time) {
+// A main-thread response after a due time consumes that scheduled fire. Claude
+// emits scheduled_task_fire for cron-driven turns; that marker permits the
+// documented 90-second early window for one-shots at :00/:30. Other early
+// responses (for example an unrelated task notification) leave them intact.
+func (s *claudeSchedules) beginTurn(now time.Time, scheduledCronFire bool) {
 	if !s.wakeup.After(now) {
 		s.wakeup = time.Time{}
 	}
 	for id, entry := range s.crons {
-		if entry.expires.Before(now) || !entry.recurring && !entry.next.After(now) {
+		if (entry.recurring && entry.expires.Before(now)) ||
+			(!entry.recurring && claudeOneShotFired(entry.next, now, scheduledCronFire)) {
 			delete(s.crons, id)
 			continue
 		}
@@ -121,6 +128,16 @@ func (s *claudeSchedules) beginTurn(now time.Time) {
 			s.crons[id] = entry
 		}
 	}
+}
+
+func claudeOneShotFired(next, now time.Time, scheduledCronFire bool) bool {
+	if !next.After(now) {
+		return true
+	}
+	if !scheduledCronFire || next.Minute() != 0 && next.Minute() != 30 {
+		return false
+	}
+	return !now.Before(next.Add(-90 * time.Second))
 }
 
 func (s *claudeSchedules) waitingUntil() (time.Time, bool) {
@@ -133,7 +150,7 @@ func (s *claudeSchedules) waitingUntil() (time.Time, bool) {
 			jitter := min(entry.schedule.Next(next).Sub(next)/2, 30*time.Minute)
 			next = next.Add(jitter)
 		}
-		if entry.expires.Before(next) {
+		if entry.recurring && entry.expires.Before(next) {
 			next = entry.expires
 		}
 		if until.IsZero() || next.Before(until) {

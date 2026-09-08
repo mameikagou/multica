@@ -187,21 +187,24 @@ type Session struct {
 	Liveness *SessionLiveness
 }
 
-// SessionLiveness exposes read-only backend liveness state to the daemon. A
-// future WaitingUntil means the backend has positively confirmed a native
-// scheduled wait; zero restores the ordinary idle watchdog immediately.
+// SessionLiveness carries backend-owned watchdog state to the daemon. A future
+// WaitingUntil means the backend has positively confirmed a native scheduled
+// wait; zero restores the ordinary idle watchdog immediately. Backends publish
+// transitions with SetWaitingUntil and ClearWaitingUntil; consumers only read.
 type SessionLiveness struct {
 	waitingUntilNanos atomic.Int64
 }
 
-func (s *SessionLiveness) setWaitingUntil(until time.Time) {
+// SetWaitingUntil publishes a confirmed native-wait deadline.
+func (s *SessionLiveness) SetWaitingUntil(until time.Time) {
 	if s == nil {
 		return
 	}
 	s.waitingUntilNanos.Store(until.UnixNano())
 }
 
-func (s *SessionLiveness) clearWaitingUntil() {
+// ClearWaitingUntil restores the ordinary idle watchdog immediately.
+func (s *SessionLiveness) ClearWaitingUntil() {
 	if s != nil {
 		s.waitingUntilNanos.Store(0)
 	}

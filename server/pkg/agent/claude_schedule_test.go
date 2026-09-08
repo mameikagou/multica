@@ -53,17 +53,17 @@ func TestClaudeSchedulesConsumeAndCancel(t *testing.T) {
 	var s claudeSchedules
 	s.observe(scheduleEvent("assistant", `{"type":"tool_use","id":"arm","name":"ScheduleWakeup","input":{}}`, ""), now)
 	s.observe(scheduleEvent("user", `{"type":"tool_result","tool_use_id":"arm"}`, fmt.Sprintf(`{"scheduledFor":%d}`, now.Add(time.Minute).UnixMilli())), now)
-	s.beginTurn(now.Add(time.Second))
+	s.beginTurn(now.Add(time.Second), false)
 	if _, ok := s.waitingUntil(); !ok {
 		t.Fatal("early notification consumed future wakeup")
 	}
-	s.beginTurn(now.Add(time.Minute))
+	s.beginTurn(now.Add(time.Minute), false)
 	if _, ok := s.waitingUntil(); ok {
 		t.Fatal("fired one-shot wakeup retained")
 	}
 	s.observe(scheduleEvent("assistant", `{"type":"tool_use","id":"cron","name":"CronCreate","input":{"cron":"* * * * *"}}`, ""), now)
 	s.observe(scheduleEvent("user", `{"type":"tool_result","tool_use_id":"cron"}`, `{"id":"job","recurring":true}`), now)
-	s.beginTurn(now.Add(time.Minute))
+	s.beginTurn(now.Add(time.Minute), false)
 	if due, ok := s.waitingUntil(); !ok || !due.After(now.Add(time.Minute)) {
 		t.Fatalf("recurring cron lost after first fire: %v %v", due, ok)
 	}
@@ -116,6 +116,37 @@ func TestClaudeSchedulesCapWaitAtSevenDayExpiry(t *testing.T) {
 	want := now.Add(7 * 24 * time.Hour)
 	if !ok || !got.Equal(want) {
 		t.Fatalf("waitingUntil() = %v, %v, want seven-day expiry %v", got, ok, want)
+	}
+}
+
+func TestClaudeSchedulesOneShotDoesNotExpireAfterSevenDays(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	var s claudeSchedules
+	s.observe(scheduleEvent("assistant", `{"type":"tool_use","id":"cron","name":"CronCreate","input":{"cron":"0 0 1 10 *"}}`, ""), now)
+	s.observe(scheduleEvent("user", `{"type":"tool_result","tool_use_id":"cron"}`, `{"id":"october","recurring":false}`), now)
+	s.beginTurn(now.Add(8*24*time.Hour), false)
+
+	got, ok := s.waitingUntil()
+	want := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("waitingUntil() = %v, %v, want one-shot fire %v", got, ok, want)
+	}
+}
+
+func TestClaudeSchedulesEarlyOneShotRequiresScheduledFireMarker(t *testing.T) {
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	var s claudeSchedules
+	s.observe(scheduleEvent("assistant", `{"type":"tool_use","id":"cron","name":"CronCreate","input":{"cron":"0 13 5 9 *"}}`, ""), now)
+	s.observe(scheduleEvent("user", `{"type":"tool_result","tool_use_id":"cron"}`, `{"id":"one-shot","recurring":false}`), now)
+
+	early := time.Date(2026, 9, 5, 12, 58, 31, 0, time.UTC)
+	s.beginTurn(early, false)
+	if _, ok := s.waitingUntil(); !ok {
+		t.Fatal("unrelated pre-due notification consumed one-shot")
+	}
+	s.beginTurn(early, true)
+	if _, ok := s.waitingUntil(); ok {
+		t.Fatal("scheduled_task_fire did not consume one-shot within its 90-second early window")
 	}
 }
 
