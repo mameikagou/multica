@@ -35,6 +35,14 @@ var (
 	httpCapacityCodeRe = regexp.MustCompile(`(^|[^0-9])(429|529)([^0-9]|$)`)
 )
 
+// concurrentRequestLimitWitness is emitted by Anthropic-compatible providers
+// that use HTTP 403 for a transient request rejection. Claude Code prefixes the
+// response with "Failed to authenticate", but neither label establishes that
+// credentials expired: a later request with the same credentials and session
+// can succeed. This wire shape must therefore beat the generic 403 auth rule and
+// take the bounded retry path.
+const concurrentRequestLimitWitness = "concurrent request limit"
+
 // Classify maps a free-form error string from the agent runtime / CLI
 // to one of the 14 agent_error.* sub-reasons. Always returns a valid
 // Reason; falls back to ReasonAgentUnknown when no rule matches and for
@@ -100,6 +108,13 @@ func Classify(rawError string) Reason {
 		strings.Contains(lower, providerUnconfiguredPhrase),
 		strings.Contains(lower, "no provider configured"):
 		return ReasonAgentMissingConfig
+
+	// A specific transient provider rejection can arrive as HTTP 403 and with a
+	// misleading auth prefix from the CLI. Match its semantic witness before the
+	// generic 403 fallback so the platform can retry instead of telling the user
+	// to sign in again.
+	case strings.Contains(lower, concurrentRequestLimitWitness):
+		return ReasonAgentProviderCapacityOrRateLimit
 
 	// 3. Auth / access. 401 / 403 / "Not logged in" / invalid token
 	//    / lacks access to the model. Status codes use a digit boundary
@@ -405,6 +420,16 @@ var legacyOpenclawCLITimeoutReasons = map[string]bool{
 	"agent_error":                      true,
 }
 
+// legacyConcurrentRequestLimitReasons are the stale buckets emitted by daemons
+// whose classifier lets a generic HTTP 403 win over this transient wire shape.
+// The refined auth bucket is the observed Claude Code result; unknown and
+// agent_error cover older classifier generations.
+var legacyConcurrentRequestLimitReasons = map[string]bool{
+	string(ReasonAgentProviderAuthOrAccess): true,
+	string(ReasonAgentUnknown):              true,
+	"agent_error":                           true,
+}
+
 func isPiProviderNetworkError(lower string) bool {
 	for _, message := range []string{"connection error.", "request timed out."} {
 		if lower == message ||
@@ -455,6 +480,10 @@ var legacyOpencodeStreamEndedReasons = map[string]bool{
 // can be deleted once no daemon old enough to produce its wire shape is still
 // reporting.
 func NormalizeDaemonReason(reason, rawError string) Reason {
+	if legacyConcurrentRequestLimitReasons[reason] &&
+		strings.Contains(strings.ToLower(rawError), concurrentRequestLimitWitness) {
+		return ReasonAgentProviderCapacityOrRateLimit
+	}
 	if legacySkillBundleReasons[reason] &&
 		strings.HasPrefix(strings.TrimSpace(rawError), legacySkillBundlePrefix) {
 		return ReasonSkillBundleUnavailable

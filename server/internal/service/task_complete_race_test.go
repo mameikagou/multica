@@ -257,6 +257,9 @@ func TestTaskFailureClassifiers(t *testing.T) {
 		// Transient mid-stream provider disconnect (MUL-4910): retryable, and
 		// resume-safe so the retry continues the truncated conversation.
 		{reason: "agent_error.provider_network", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
+		// A provider can report a transient concurrency rejection as HTTP 403.
+		// Retrying the same session is safe and matches a manual resend.
+		{reason: "agent_error.provider_capacity_or_rate_limit", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
 		{reason: "runtime_recovery", wantType: "runtime", wantResumeOK: true, wantRetry: true},
 		{reason: "iteration_limit", wantType: "agent_output", wantResumeOK: false, wantRetry: false},
 		{reason: "api_invalid_request", wantType: "agent_error", wantResumeOK: false, wantRetry: false},
@@ -302,6 +305,48 @@ func TestRuntimeCLITimeoutIsNotAutoRetried(t *testing.T) {
 	}
 	if !retryableReasons["agent_error.provider_network"] {
 		t.Error("agent_error.provider_network must stay retryable: real provider stalls are transient")
+	}
+}
+
+func TestConcurrentRequestLimitRetries(t *testing.T) {
+	const raw = "Failed to authenticate. API Error: 403 You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again."
+
+	resolveReason := func(reported string) string {
+		if reported == "" {
+			reported = taskfailure.Classify(raw).String()
+		}
+		return taskfailure.NormalizeDaemonReason(reported, raw).String()
+	}
+
+	for _, tc := range []struct {
+		name     string
+		reported string
+	}{
+		{name: "current daemon", reported: ""},
+		{name: "older daemon classified 403 as auth", reported: string(taskfailure.ReasonAgentProviderAuthOrAccess)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := resolveReason(tc.reported)
+			if reason != string(taskfailure.ReasonAgentProviderCapacityOrRateLimit) {
+				t.Fatalf("resolved reason = %q, want %q", reason, taskfailure.ReasonAgentProviderCapacityOrRateLimit)
+			}
+			if resumeUnsafeFailureReason(reason) {
+				t.Fatalf("concurrent request rejection must keep the resumable session")
+			}
+
+			task := db.AgentTaskQueue{
+				Attempt:       1,
+				MaxAttempts:   2,
+				ChatSessionID: pgtype.UUID{Bytes: [16]byte{1}, Valid: true},
+			}
+			if !retryEligible(reason, task) {
+				t.Fatalf("first transient rejection must schedule the one remaining attempt")
+			}
+			task.Attempt = 2
+			if retryEligible(reason, task) {
+				t.Fatalf("retry must stop at the task's existing attempt ceiling")
+			}
+		})
 	}
 }
 
