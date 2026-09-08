@@ -845,6 +845,18 @@ exit 1
 `
 }
 
+// fakeAgyTrailingNetworkErrorAfterNewPartialResponseScript guards against a
+// completed earlier answer making a later, interrupted answer look complete.
+func fakeAgyTrailingNetworkErrorAfterNewPartialResponseScript() string {
+	return `#!/bin/sh
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"57a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"Earlier answer."}}'
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"57a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":3,"state":"DONE","step_type":"tool"}}'
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"57a6d8f2-8523-46fc-8fc9-87e630cbe295","step_index":4,"state":"ACTIVE","step_type":"agent_response","text_delta":"Partial final answer."}}'
+printf '%s\n' '{"event":"result","result":{"conversation_id":"57a6d8f2-8523-46fc-8fc9-87e630cbe295","status":"ERROR","response":"Partial final answer.","error":"There was a network issue connecting to the server, please try again."}}'
+exit 1
+`
+}
+
 func fakeAgyCancelledStreamJSONScript() string {
 	return `#!/bin/sh
 printf '%s\n' '{"event":"init","conversation_id":"27a6d8f2-8523-46fc-8fc9-87e630cbe295","init":{"model":"gemini-3.8-flash-high"}}'
@@ -973,6 +985,31 @@ func TestAntigravityBackendKeepsNetworkFailureForPartialResponse(t *testing.T) {
 		t.Fatal("result channel closed without a value")
 	}
 	if result.Status != "failed" || result.Output != "Complete answer." || !strings.Contains(result.Error, antigravityNetworkIssueError) {
+		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
+	}
+}
+
+func TestAntigravityBackendKeepsNetworkFailureForNewerPartialResponse(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "agy")
+	writeTestExecutable(t, fakePath, []byte(fakeAgyTrailingNetworkErrorAfterNewPartialResponseScript()))
+
+	backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+	if err != nil {
+		t.Fatalf("new antigravity backend: %v", err)
+	}
+	session, err := backend.Execute(context.Background(), "prompt-ignored", ExecOptions{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for range session.Messages {
+	}
+	result, ok := <-session.Result
+	if !ok {
+		t.Fatal("result channel closed without a value")
+	}
+	if result.Status != "failed" || result.Output != "Partial final answer." || !strings.Contains(result.Error, antigravityNetworkIssueError) {
 		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
 	}
 }
