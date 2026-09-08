@@ -244,7 +244,8 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 		var streamResponse string
 		var streamResultUsage *antigravityStreamUsage
 		streamStepUsage := make(map[int]TokenUsage)
-		streamAgentResponseDone := false
+		streamLatestAgentResponseStep := -1
+		streamLatestAgentResponseDone := false
 		finalStatus := "completed"
 		var finalError string
 
@@ -267,8 +268,12 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 					if event.StepUpdate.ConversationID != "" {
 						streamSessionID = event.StepUpdate.ConversationID
 					}
-					if strings.EqualFold(event.StepUpdate.State, "done") && event.StepUpdate.StepType == "agent_response" {
-						streamAgentResponseDone = true
+					if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.StepIndex >= streamLatestAgentResponseStep {
+						// Only the latest response step determines whether the answer
+						// completed. A prior DONE response may be followed by a newer
+						// ACTIVE response that is cut off by the network error.
+						streamLatestAgentResponseStep = event.StepUpdate.StepIndex
+						streamLatestAgentResponseDone = strings.EqualFold(event.StepUpdate.State, "done")
 					}
 					if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.TextDelta != "" {
 						output.WriteString(event.StepUpdate.TextDelta)
@@ -334,7 +339,7 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 			finalStatus = "aborted"
 			finalError = "execution cancelled"
 		} else if status := antigravityResultStatus(streamResultStatus); finalStatus == "completed" && status != "completed" {
-			if antigravityCompletedDespiteTrailingNetworkError(streamResultError, streamResponse, streamAgentResponseDone) {
+			if antigravityCompletedDespiteTrailingNetworkError(streamResultError, streamResponse, streamLatestAgentResponseDone) {
 				// agy can emit a complete DONE response and only then fail a
 				// follow-up network operation. Preserve the finished answer instead
 				// of presenting that trailing transport error as a failed turn.
