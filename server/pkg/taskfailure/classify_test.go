@@ -222,6 +222,11 @@ func TestClassifyOrderingPriorities(t *testing.T) {
 		// auth rejection.
 		{"missing api key beats 401", "missing api_key for openai (401 returned downstream)", ReasonAgentMissingConfig},
 
+		// Some Anthropic-compatible providers return 403 for a transient
+		// concurrency rejection. The semantic message must beat the generic
+		// status-code fallback; credentials are still valid and retrying works.
+		{"403 concurrent request limit beats auth", "Failed to authenticate. API Error: 403 You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again.", ReasonAgentProviderCapacityOrRateLimit},
+
 		// Both "429" and "rate limit" present — should still land in
 		// the capacity bucket, not the quota bucket.
 		{"429 rate limit", "API Error: 429 rate limit reached", ReasonAgentProviderCapacityOrRateLimit},
@@ -238,6 +243,26 @@ func TestClassifyOrderingPriorities(t *testing.T) {
 				t.Errorf("Classify(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeDaemonReasonUpgradesConcurrentRequestLimit(t *testing.T) {
+	t.Parallel()
+
+	const raw = "Failed to authenticate. API Error: 403 You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again."
+
+	for _, reason := range []string{
+		string(ReasonAgentProviderAuthOrAccess),
+		string(ReasonAgentUnknown),
+		"agent_error",
+	} {
+		if got := NormalizeDaemonReason(reason, raw); got != ReasonAgentProviderCapacityOrRateLimit {
+			t.Errorf("NormalizeDaemonReason(%q, concurrent request rejection) = %q, want %q", reason, got, ReasonAgentProviderCapacityOrRateLimit)
+		}
+	}
+
+	if got := NormalizeDaemonReason(string(ReasonAgentProviderAuthOrAccess), "API Error: 403 Forbidden"); got != ReasonAgentProviderAuthOrAccess {
+		t.Errorf("plain 403 auth rejection changed to %q", got)
 	}
 }
 
