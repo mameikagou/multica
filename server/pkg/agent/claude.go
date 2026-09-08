@@ -211,7 +211,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			_ = stdout.Close()
 		}()
 
-		beginScheduledTurn := func() {
+		beginScheduledTurn := func(scheduledCronFire bool) {
 			if !waitingForWakeup {
 				return
 			}
@@ -219,8 +219,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// only once a new main-thread turn starts, so an incomplete subsequent
 			// turn cannot be masked by the previous checkpoint.
 			waitingForWakeup = false
-			liveness.clearWaitingUntil()
-			schedules.beginTurn(time.Now())
+			liveness.ClearWaitingUntil()
+			schedules.beginTurn(time.Now(), scheduledCronFire)
 			sawResult = false
 			finalResultText = ""
 			lastAssistantText = ""
@@ -247,7 +247,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				if msg.ParentToolUseID == "" {
-					beginScheduledTurn()
+					beginScheduledTurn(false)
 				}
 				schedules.observe(msg, time.Now())
 				assistantEventCount++
@@ -263,8 +263,13 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					sawAsyncLaunch = true
 				}
 			case "system":
-				if msg.Subtype == "init" && msg.ParentToolUseID == "" {
-					beginScheduledTurn()
+				if msg.ParentToolUseID == "" {
+					switch msg.Subtype {
+					case "scheduled_task_fire":
+						beginScheduledTurn(true)
+					case "init":
+						beginScheduledTurn(false)
+					}
 				}
 				if msg.SessionID != "" {
 					sessionID = msg.SessionID
@@ -287,7 +292,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 				if until, pending := schedules.waitingUntil(); pending && !resultIsError && terminalReasonError == "" && !sawAsyncLaunch {
 					waitingForWakeup = true
-					liveness.setWaitingUntil(until)
+					liveness.SetWaitingUntil(until)
 					b.cfg.Logger.Info("claude awaiting native scheduled wakeup", "session_id", sessionID, "waiting_until", until)
 					trySend(msgCh, Message{Type: MessageStatus, Status: "waiting", SessionID: sessionID, WaitingUntil: until})
 					continue
