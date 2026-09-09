@@ -104,21 +104,21 @@ Web / Desktop / Mobile
 | provider 偶发返回 `403 concurrent request limit` | 整合上游 [#8200](https://github.com/multica-ai/multica/pull/8200) 的准确分类；上游只修正提示，本分支额外按现有任务次数自动重发一次 | 不再误导用户重新认证，短暂并发拒绝通常也不需要手动重发消息 |
 | 打开 Chat 后还要再点一次最近对话 | 前端自动打开最近会话 | 降低无意义操作 |
 | 进行中任务的 token 尾量可能未进入统计 | 服务端统计补入 live usage tail | 正常展示本地 Agent 的 token 使用量 |
-| Antigravity 运行中存在陈旧 active steps、临时认证超时或过早认定结束 | 过滤已失效 active steps，遇瞬时认证超时自动重试，强制等待最新响应完全完成并保留完整回复；完整记录 input/output/cache Token 用量 | 保障 Google Antigravity 作为主力 Agent 时的稳定执行与真实用量统计 |
-| Claude 在执行定时循环（schedule/cron/timer）时，终态结果到达可能导致会话提前中断或死锁 | 支持原生循环跨终端结果持续活跃，定时唤醒后保留终态结果，精准累积多轮循环 Token | 解决 Claude 自动化轮询和长时间后台任务的会话保持与精准计费 |
-| 任务执行偶发因环境瞬时抖动失败，或后台定时等待缺乏守护 | 任何执行失败在本地自动重试一次；定时调度等待（scheduled waits）与看门狗保障（watchdog）深度复合 | 显著提升任务执行韧性，长等待与定时轮询任务更稳健 |
+| Antigravity 遇到旧 active step、临时认证超时或过早判定结束 | 过滤失效 step，认证超时自动重试，强制等完最新响应并保全回复；补全 input/output/cache token | 不丢回复，不被假死打断，用量统计准确 |
+| Claude 执行 scheduled loop（cron/timer）时易被终态结果意外截断 | 跨 terminal 保持活跃，定时唤醒后保留终态结果并累积各轮 token | 循环轮询和定时后台任务能正常跑完 |
+| 任务偶发因环境抖动失败，或 scheduled wait 挂死 | 任何执行失败就地自动重试一次；定时等待增加看门狗兜底 | 减少人工重试，后台等待不无限挂死 |
 
 主要组合变更：
 
 - [`a9a546311`](https://github.com/mameikagou/multica/commit/a9a546311)：增加 `full / minimal / off` 平台上下文模式；
-- [`89998e620`](https://github.com/mameikagou/multica/commit/89998e620)：服务端统计补入 live usage tail（进行中任务的 Token 统计）；
+- [`89998e620`](https://github.com/mameikagou/multica/commit/89998e620)：服务端统计补入 live usage tail；
 - [`fa206c6a2`](https://github.com/mameikagou/multica/commit/fa206c6a2)：保持版本化本地构建的 `multica` CLI 在任务 PATH 中可用；
 - [`a3f19fe8f`](https://github.com/mameikagou/multica/commit/a3f19fe8f)：串行化 Codex session store writers，防止并发冲突；
 - [`90cfcc23a`](https://github.com/mameikagou/multica/commit/90cfcc23a)：Codex Web 私聊恢复后只发增量 Prompt，避免重复注入稳定 developer instructions；
-- [`c4293efb3`](https://github.com/mameikagou/multica/commit/c4293efb3) + [`526d17094`](https://github.com/mameikagou/multica/commit/526d17094) + [`2ff7a1086`](https://github.com/mameikagou/multica/commit/2ff7a1086) + [`08c4197f2`](https://github.com/mameikagou/multica/commit/08c4197f2) + [`e13003fa5`](https://github.com/mameikagou/multica/commit/e13003fa5) + [`126ef60e3`](https://github.com/mameikagou/multica/commit/126ef60e3)：Antigravity 全面适配：完整 Token 用量记录、响应完成等待、陈旧步骤过滤、瞬时认证超时自动重试与回复保护；
-- [`1d9c735ed`](https://github.com/mameikagou/multica/commit/1d9c735ed) + [`4db39b9b6`](https://github.com/mameikagou/multica/commit/4db39b9b6) + [`ca688aa73`](https://github.com/mameikagou/multica/commit/ca688aa73) + [`8e920fb51`](https://github.com/mameikagou/multica/commit/8e920fb51) + [`42bce34c5`](https://github.com/mameikagou/multica/commit/42bce34c5) + [`b2a004904`](https://github.com/mameikagou/multica/commit/b2a004904)：Claude 原生循环调度支持（Scheduled Loops & Native Loops），跨结果保持活跃，唤醒后保留终态结果，精准累积 Token 用量；
-- [`ab41c5523`](https://github.com/mameikagou/multica/commit/ab41c5523)：将定时等待（scheduled waits）与看门狗超时监控（watchdog safeguards）深度复合；
-- [`8806ed0c1`](https://github.com/mameikagou/multica/commit/8806ed0c1)：本地执行失败自动重试一次（retry every execution failure once locally）。
+- [`c4293efb3`](https://github.com/mameikagou/multica/commit/c4293efb3) + [`526d17094`](https://github.com/mameikagou/multica/commit/526d17094) + [`2ff7a1086`](https://github.com/mameikagou/multica/commit/2ff7a1086) + [`08c4197f2`](https://github.com/mameikagou/multica/commit/08c4197f2) + [`e13003fa5`](https://github.com/mameikagou/multica/commit/e13003fa5) + [`126ef60e3`](https://github.com/mameikagou/multica/commit/126ef60e3)：适配 Antigravity：等待响应完成、过滤失效 step、瞬时认证超时重试并补全 token 统计；
+- [`1d9c735ed`](https://github.com/mameikagou/multica/commit/1d9c735ed) + [`4db39b9b6`](https://github.com/mameikagou/multica/commit/4db39b9b6) + [`ca688aa73`](https://github.com/mameikagou/multica/commit/ca688aa73) + [`8e920fb51`](https://github.com/mameikagou/multica/commit/8e920fb51) + [`42bce34c5`](https://github.com/mameikagou/multica/commit/42bce34c5) + [`b2a004904`](https://github.com/mameikagou/multica/commit/b2a004904)：Claude 支持原生 scheduled/native loop，唤醒后不提前退出并累积各轮 token；
+- [`ab41c5523`](https://github.com/mameikagou/multica/commit/ab41c5523)：定时等待增加看门狗超时兜底；
+- [`8806ed0c1`](https://github.com/mameikagou/multica/commit/8806ed0c1)：本地任务失败就地自动重试一次。
 
 ## 平台上下文模式
 
