@@ -1591,6 +1591,63 @@ type fakeBackend struct {
 	idx     atomic.Int32
 }
 
+func TestLocalExecutionRetryOnce(t *testing.T) {
+	for _, status := range []string{"failed", "timeout", "idle_watchdog", "aborted", "unknown"} {
+		for _, secondStatus := range []string{"completed", "failed"} {
+			t.Run(status+"/"+secondStatus, func(t *testing.T) {
+				d := newTestDaemon(t)
+				backend := &fakeBackend{results: []agent.Result{
+					{Status: status, Error: "arbitrary provider error", SessionID: "current-session", Usage: map[string]agent.TokenUsage{"model": {InputTokens: 10}}},
+					{Status: secondStatus, Output: "second attempt", Usage: map[string]agent.TokenUsage{"model": {InputTokens: 20}}},
+				}}
+				seq := new(atomic.Int32)
+				execute := func(opts agent.ExecOptions) (agent.Result, int32, error) {
+					return d.executeAndDrain(context.Background(), backend, "prompt", opts, slog.Default(), "retry-test", "", seq)
+				}
+				first, _, err := execute(agent.ExecOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, tools := retryFailedExecutionOnce(context.Background(), first, 2, agent.ExecOptions{}, execute)
+				if len(backend.calls) != 2 || result.Status != secondStatus || tools != 2 {
+					t.Fatalf("calls=%d result=%+v tools=%d", len(backend.calls), result, tools)
+				}
+				if backend.calls[1].ResumeSessionID != "current-session" || result.SessionID != "current-session" || result.Usage["model"].InputTokens != 30 {
+					t.Fatalf("retry lost session or usage: opts=%+v result=%+v", backend.calls[1], result)
+				}
+			})
+		}
+	}
+}
+
+func TestLocalExecutionRetryStopsOnSuccessOrCancellation(t *testing.T) {
+	for _, status := range []string{"completed", "cancelled", "failed"} {
+		ctx, cancel := context.WithCancel(context.Background())
+		if status == "failed" {
+			cancel()
+		}
+		retryFailedExecutionOnce(ctx, agent.Result{Status: status}, 0, agent.ExecOptions{}, func(agent.ExecOptions) (agent.Result, int32, error) {
+			t.Fatalf("must not retry %s with context %v", status, ctx.Err())
+			return agent.Result{}, 0, nil
+		})
+		cancel()
+	}
+}
+
+func TestLocalExecutionRetryLaunchFailure(t *testing.T) {
+	calls := 0
+	result, _ := retryFailedExecutionOnce(context.Background(), agent.Result{Status: "failed", Error: "first launch failed"}, 0, agent.ExecOptions{ResumeSessionID: "prior"}, func(opts agent.ExecOptions) (agent.Result, int32, error) {
+		calls++
+		if opts.ResumeSessionID != "prior" {
+			t.Fatal("lost prior session")
+		}
+		return agent.Result{}, 0, fmt.Errorf("second launch failed")
+	})
+	if calls != 1 || result.Status != "failed" || result.Error != "second launch failed" {
+		t.Fatalf("calls=%d result=%+v", calls, result)
+	}
+}
+
 func (b *fakeBackend) Execute(_ context.Context, _ string, opts agent.ExecOptions) (*agent.Session, error) {
 	i := int(b.idx.Add(1)) - 1
 	b.calls = append(b.calls, opts)

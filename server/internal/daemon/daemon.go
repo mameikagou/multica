@@ -8431,7 +8431,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var msgSeq atomic.Int32
 	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 	if err != nil {
-		return TaskResult{}, err
+		result = agent.Result{Status: "failed", Error: err.Error()}
 	}
 
 	// retiredSessionID is the session this run was told to resume and then
@@ -8443,7 +8443,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var retiredSessionID string
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
-	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
+	if ctx.Err() == nil && shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
 		firstResult := result
 		firstUsage := result.Usage
 		firstTools := tools
@@ -8501,6 +8501,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// session keeps firstResult so the bad session stays excluded rather
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
+	} else {
+		// Local policy: every execution failure gets one retry, regardless of
+		// provider or error classification. The fresh-session branch above
+		// consumes the same budget. User cancellation never starts another run.
+		result, tools = retryFailedExecutionOnce(ctx, result, tools, execOpts,
+			func(opts agent.ExecOptions) (agent.Result, int32, error) {
+				taskLog.Warn("agent execution failed, retrying once", "status", result.Status, "error", result.Error)
+				return d.executeAndDrain(ctx, backend, prompt, opts, taskLog, task.ID, env.CodexHome, &msgSeq)
+			})
 	}
 	phaseRecorder.Mark(taskPhaseTurnCompleted)
 
@@ -8933,6 +8942,26 @@ func freshSessionMayHelp(errText string) bool {
 	default:
 		return true
 	}
+}
+
+// retryFailedExecutionOnce shares the task transcript and preserves session
+// continuity and usage across exactly one additional backend invocation.
+func retryFailedExecutionOnce(ctx context.Context, first agent.Result, firstTools int32, opts agent.ExecOptions, execute func(agent.ExecOptions) (agent.Result, int32, error)) (agent.Result, int32) {
+	if ctx.Err() != nil || first.Status == "completed" || first.Status == "cancelled" {
+		return first, firstTools
+	}
+	if first.SessionID != "" {
+		opts.ResumeSessionID = first.SessionID
+	}
+	retry, retryTools, err := execute(opts)
+	if err != nil {
+		retry = agent.Result{Status: "failed", Error: err.Error()}
+	}
+	if retry.SessionID == "" {
+		retry.SessionID = first.SessionID
+	}
+	retry.Usage = mergeUsage(first.Usage, retry.Usage)
+	return retry, firstTools + retryTools
 }
 
 // executeAndDrain runs a backend, drains its message stream (forwarding to the
