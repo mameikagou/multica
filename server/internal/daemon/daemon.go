@@ -9475,8 +9475,10 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 				}
 				threshold = toolWindow
 			}
-			last := time.Unix(0, lastActivityAt.Load())
-			if waitingUntil := liveness.WaitingUntil(); waitingUntil.After(last) {
+			activitySnapshot := lastActivityAt.Load()
+			waitingUntilSnapshot := liveness.WaitingUntil()
+			last := time.Unix(0, activitySnapshot)
+			if waitingUntil := waitingUntilSnapshot; waitingUntil.After(last) {
 				last = waitingUntil
 			}
 			idleFor := time.Since(last)
@@ -9511,7 +9513,8 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 			// callback may publish newer activity without changing the count.
 			currentToolInFlight := inFlightTools() > 0
 			currentActivity := lastActivityAt.Load()
-			if currentActivity != last.UnixNano() ||
+			if currentActivity != activitySnapshot ||
+				!liveness.WaitingUntil().Equal(waitingUntilSnapshot) ||
 				currentToolInFlight != toolInFlight || len(messages) > 0 {
 				continue
 			}
