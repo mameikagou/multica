@@ -31,7 +31,7 @@
 
 ## 已被上游合并的贡献
 
-截至 2026-09-01，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 6 个 PR 已全部正式合并（日期按 GitHub UTC）：
+截至 2026-09-09，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 7 个 PR 已全部正式合并（日期按 GitHub UTC）：
 
 | PR | 上游获得的能力 | 合并日期 |
 | --- | --- | --- |
@@ -41,6 +41,7 @@
 | [#7760 · Pi session continuity](https://github.com/multica-ai/multica/pull/7760) | Pi/OMP 使用独立 JSONL session 时不再被 workdir 变化错误阻断恢复 | 2026-08-31 |
 | [#7790 · Codex thread handshake budget](https://github.com/multica-ai/multica/pull/7790) | 为 `thread/start` / `thread/resume` 设置独立的 60 秒默认预算，轻量 RPC 继续保持 30 秒 | 2026-08-31 |
 | [#7798 · require proven task ownership before GC mutation](https://github.com/multica-ai/multica/pull/7798) | GC 修改磁盘前必须先用 `.task_owner` 证明目录由 Multica 创建，普通目录不会再因为够旧或缺少完成信息就被递归删除。这项修复来自一次误删 20 GB 以上文件的真实事故，把“无法确认归属”改成保留目录，而不是猜测删除。 | 2026-09-01 |
+| [#8200 · classify concurrent request rejections](https://github.com/multica-ai/multica/pull/8200) | 将带有 `concurrent request limit` 的 provider 403 正确识别为临时容量限制，不再误导用户重新登录或把正常会话判成上下文溢出 | 2026-09-09 |
 
 ## 这个分支解决什么问题
 
@@ -100,6 +101,7 @@ Web / Desktop / Mobile
 | Web 私聊的每个 turn 重复携带 audience、initiator、附件说明和平台简介 | 成功恢复同一 Codex thread 后只发新消息和本轮附件；冷启动回退仍保留完整说明 | 不浪费上下文，也不牺牲断线恢复安全性 |
 | 重命名的本地构建可能不在子进程 PATH | daemon 把当前 CLI 的稳定别名加入任务 PATH | `multica` 命令保持可用，但不强迫 Agent 调用 |
 | native cwd 与 daemon 可回收 workspace 如果没有所有权边界，GC 存在误判风险 | GC 修改前要求可验证的 Multica task ownership | 用户代码目录不会被当成已完成任务的临时目录 |
+| provider 偶发返回 `403 concurrent request limit` | 整合上游 [#8200](https://github.com/multica-ai/multica/pull/8200) 的准确分类；上游只修正提示，本分支额外按现有任务次数自动重发一次 | 不再误导用户重新认证，短暂并发拒绝通常也不需要手动重发消息 |
 | 打开 Chat 后还要再点一次最近对话 | 前端自动打开最近会话 | 降低无意义操作 |
 | 进行中任务的 token 尾量可能未进入统计 | 服务端统计补入 live usage tail | 正常展示本地 Agent 的 token 使用量 |
 
@@ -113,6 +115,7 @@ Web / Desktop / Mobile
 - [`7a3702d51`](https://github.com/mameikagou/multica/commit/7a3702d51)：GC 修改目录前验证 task ownership；
 - [`da985fec3`](https://github.com/mameikagou/multica/commit/da985fec3)：补齐进行中任务的 token 统计；
 - [`33d7a6469`](https://github.com/mameikagou/multica/commit/33d7a6469)：保持版本化本地构建的 `multica` CLI 可用；
+- [`e32076d4d`](https://github.com/mameikagou/multica/commit/e32076d4d) + [`c54e79131`](https://github.com/mameikagou/multica/commit/c54e79131)：识别 provider 的并发请求拒绝，并在个人版中自动重发一次；
 - [`c5f9479dc`](https://github.com/mameikagou/multica/commit/c5f9479dc)：Chat 入口自动打开最近会话。
 
 ## 平台上下文模式
