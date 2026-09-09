@@ -4,14 +4,14 @@
 
 **一个不接管用户工作流的多 Agent 聚合网关。**
 
-[个人维护分支](https://github.com/mameikagou/multica/tree/local/native-context-chat-handoff) ·
+[个人维护分支](https://github.com/mameikagou/multica/tree/local/native-context-v0.4.42) ·
 [上游项目](https://github.com/multica-ai/multica) ·
 [上游文档](https://multica.ai/docs)
 
 </div>
 
 > [!IMPORTANT]
-> 这是 `multica-ai/multica` 的个人发行分支。它保留 Multica 优秀的传输、路由、运行时注册、聊天界面、执行日志和用量统计能力，同时尽量不接管 Codex、Claude Code、Cursor、Pi 等 Agent/Harness 原本的工作方式。
+> 这是基于官方最新发布版 **v0.4.42** 的个人发行分支（`local/native-context-v0.4.42`）。它保留 Multica 优秀的传输、路由、运行时注册、聊天界面、执行日志和用量统计能力，同时尽量不接管 Codex、Claude Code、Cursor、Pi、Antigravity 等 Agent/Harness 原本的工作方式。
 
 ## 这条维护分支的价值
 
@@ -104,19 +104,21 @@ Web / Desktop / Mobile
 | provider 偶发返回 `403 concurrent request limit` | 整合上游 [#8200](https://github.com/multica-ai/multica/pull/8200) 的准确分类；上游只修正提示，本分支额外按现有任务次数自动重发一次 | 不再误导用户重新认证，短暂并发拒绝通常也不需要手动重发消息 |
 | 打开 Chat 后还要再点一次最近对话 | 前端自动打开最近会话 | 降低无意义操作 |
 | 进行中任务的 token 尾量可能未进入统计 | 服务端统计补入 live usage tail | 正常展示本地 Agent 的 token 使用量 |
+| Antigravity 运行中存在陈旧 active steps、临时认证超时或过早认定结束 | 过滤已失效 active steps，遇瞬时认证超时自动重试，强制等待最新响应完全完成并保留完整回复；完整记录 input/output/cache Token 用量 | 保障 Google Antigravity 作为主力 Agent 时的稳定执行与真实用量统计 |
+| Claude 在执行定时循环（schedule/cron/timer）时，终态结果到达可能导致会话提前中断或死锁 | 支持原生循环跨终端结果持续活跃，定时唤醒后保留终态结果，精准累积多轮循环 Token | 解决 Claude 自动化轮询和长时间后台任务的会话保持与精准计费 |
+| 任务执行偶发因环境瞬时抖动失败，或后台定时等待缺乏守护 | 任何执行失败在本地自动重试一次；定时调度等待（scheduled waits）与看门狗保障（watchdog）深度复合 | 显著提升任务执行韧性，长等待与定时轮询任务更稳健 |
 
 主要组合变更：
 
-- [`17b27e12f`](https://github.com/mameikagou/multica/commit/17b27e12f)：增加 `full / minimal / off` 平台上下文模式；
-- [`9120e85ad`](https://github.com/mameikagou/multica/commit/9120e85ad) + [`0cd106f242`](https://github.com/mameikagou/multica/commit/0cd106f242)：将 native cwd 从 Codex 泛化到全部 provider，并迁移可验证的旧 rollout；
-- [`2f2070609`](https://github.com/mameikagou/multica/commit/2f2070609) + [#7818](https://github.com/multica-ai/multica/pull/7818)：同时使用精确释放信号和有界等待完成追加消息交接；
-- [`bf4dd3a95`](https://github.com/mameikagou/multica/commit/bf4dd3a95) + [`149f0ef56`](https://github.com/mameikagou/multica/commit/149f0ef56)：串行化 Pi transcript 和 Codex conversation store writer；
-- [`2a513594f`](https://github.com/mameikagou/multica/commit/2a513594f) + [`dfa277af7`](https://github.com/mameikagou/multica/commit/dfa277af7)：Codex Web 私聊恢复后只发增量 Prompt，并避免重复注入稳定 developer instructions；
-- [`7a3702d51`](https://github.com/mameikagou/multica/commit/7a3702d51)：GC 修改目录前验证 task ownership；
-- [`da985fec3`](https://github.com/mameikagou/multica/commit/da985fec3)：补齐进行中任务的 token 统计；
-- [`33d7a6469`](https://github.com/mameikagou/multica/commit/33d7a6469)：保持版本化本地构建的 `multica` CLI 可用；
-- [`e32076d4d`](https://github.com/mameikagou/multica/commit/e32076d4d) + [`c54e79131`](https://github.com/mameikagou/multica/commit/c54e79131)：识别 provider 的并发请求拒绝，并在个人版中自动重发一次；
-- [`c5f9479dc`](https://github.com/mameikagou/multica/commit/c5f9479dc)：Chat 入口自动打开最近会话。
+- [`a9a546311`](https://github.com/mameikagou/multica/commit/a9a546311)：增加 `full / minimal / off` 平台上下文模式；
+- [`89998e620`](https://github.com/mameikagou/multica/commit/89998e620)：服务端统计补入 live usage tail（进行中任务的 Token 统计）；
+- [`fa206c6a2`](https://github.com/mameikagou/multica/commit/fa206c6a2)：保持版本化本地构建的 `multica` CLI 在任务 PATH 中可用；
+- [`a3f19fe8f`](https://github.com/mameikagou/multica/commit/a3f19fe8f)：串行化 Codex session store writers，防止并发冲突；
+- [`90cfcc23a`](https://github.com/mameikagou/multica/commit/90cfcc23a)：Codex Web 私聊恢复后只发增量 Prompt，避免重复注入稳定 developer instructions；
+- [`c4293efb3`](https://github.com/mameikagou/multica/commit/c4293efb3) + [`526d17094`](https://github.com/mameikagou/multica/commit/526d17094) + [`2ff7a1086`](https://github.com/mameikagou/multica/commit/2ff7a1086) + [`08c4197f2`](https://github.com/mameikagou/multica/commit/08c4197f2) + [`e13003fa5`](https://github.com/mameikagou/multica/commit/e13003fa5) + [`126ef60e3`](https://github.com/mameikagou/multica/commit/126ef60e3)：Antigravity 全面适配：完整 Token 用量记录、响应完成等待、陈旧步骤过滤、瞬时认证超时自动重试与回复保护；
+- [`1d9c735ed`](https://github.com/mameikagou/multica/commit/1d9c735ed) + [`4db39b9b6`](https://github.com/mameikagou/multica/commit/4db39b9b6) + [`ca688aa73`](https://github.com/mameikagou/multica/commit/ca688aa73) + [`8e920fb51`](https://github.com/mameikagou/multica/commit/8e920fb51) + [`42bce34c5`](https://github.com/mameikagou/multica/commit/42bce34c5) + [`b2a004904`](https://github.com/mameikagou/multica/commit/b2a004904)：Claude 原生循环调度支持（Scheduled Loops & Native Loops），跨结果保持活跃，唤醒后保留终态结果，精准累积 Token 用量；
+- [`ab41c5523`](https://github.com/mameikagou/multica/commit/ab41c5523)：将定时等待（scheduled waits）与看门狗超时监控（watchdog safeguards）深度复合；
+- [`8806ed0c1`](https://github.com/mameikagou/multica/commit/8806ed0c1)：本地执行失败自动重试一次（retry every execution failure once locally）。
 
 ## 平台上下文模式
 
@@ -161,7 +163,7 @@ multica --profile <profile> config set platform_context_mode off
 
 ```bash
 git clone \
-  --branch local/native-context-chat-handoff \
+  --branch local/native-context-v0.4.42 \
   --single-branch \
   https://github.com/mameikagou/multica.git
 cd multica
@@ -172,8 +174,8 @@ cd multica
 ```bash
 git remote add fork https://github.com/mameikagou/multica.git 2>/dev/null || true
 git fetch fork
-git switch local/native-context-chat-handoff
-git pull --ff-only fork local/native-context-chat-handoff
+git switch local/native-context-v0.4.42
+git pull --ff-only fork local/native-context-v0.4.42
 ```
 
 ### 3. 构建版本化 CLI
@@ -276,7 +278,7 @@ multica --profile "$PROFILE" daemon status --output json
 
 ```bash
 git clone \
-  --branch local/native-context-chat-handoff \
+  --branch local/native-context-v0.4.42 \
   --single-branch \
   https://github.com/mameikagou/multica.git
 cd multica
@@ -289,8 +291,8 @@ make selfhost-build
 
 ```bash
 git fetch fork
-git switch local/native-context-chat-handoff
-git pull --ff-only fork local/native-context-chat-handoff
+git switch local/native-context-v0.4.42
+git pull --ff-only fork local/native-context-v0.4.42
 ```
 
 重新执行“构建版本化 CLI”，确认 `multica version` 后切换软链并重启 daemon。不要直接对个人分支执行 `git reset --hard origin/main`；需要吸收上游时，在单独分支完成 merge/rebase、测试后再合回个人维护分支。
