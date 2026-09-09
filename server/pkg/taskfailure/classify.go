@@ -36,11 +36,11 @@ var (
 )
 
 // concurrentRequestLimitWitness is emitted by Anthropic-compatible providers
-// that use HTTP 403 for a transient request rejection. Claude Code prefixes the
-// response with "Failed to authenticate", but neither label establishes that
-// credentials expired: a later request with the same credentials and session
-// can succeed. This wire shape must therefore beat the generic 403 auth rule and
-// take the bounded retry path.
+// that use HTTP 403 for a transient concurrency rejection. Claude Code may
+// prefix it with an authentication or access-token failure, but credentials
+// remain valid and a later request can succeed. Match the semantic witness
+// before both token-window and generic auth rules so the persisted reason is
+// accurate and the personal fork can take its bounded retry path.
 const concurrentRequestLimitWitness = "concurrent request limit"
 
 // Classify maps a free-form error string from the agent runtime / CLI
@@ -79,6 +79,12 @@ func Classify(rawError string) Reason {
 	lower := strings.ToLower(trimmed)
 
 	switch {
+	// A concurrent-request rejection can contain both "access token" and HTTP
+	// 403. Its specific semantic witness must beat the broader context and auth
+	// rules below.
+	case strings.Contains(lower, concurrentRequestLimitWitness):
+		return ReasonAgentProviderCapacityOrRateLimit
+
 	// 1. Context / token window overflow. Checked early so "token
 	//    limit" doesn't get swallowed by the broader "limit" / "quota"
 	//    rule below.
@@ -108,13 +114,6 @@ func Classify(rawError string) Reason {
 		strings.Contains(lower, providerUnconfiguredPhrase),
 		strings.Contains(lower, "no provider configured"):
 		return ReasonAgentMissingConfig
-
-	// A specific transient provider rejection can arrive as HTTP 403 and with a
-	// misleading auth prefix from the CLI. Match its semantic witness before the
-	// generic 403 fallback so the platform can retry instead of telling the user
-	// to sign in again.
-	case strings.Contains(lower, concurrentRequestLimitWitness):
-		return ReasonAgentProviderCapacityOrRateLimit
 
 	// 3. Auth / access. 401 / 403 / "Not logged in" / invalid token
 	//    / lacks access to the model. Status codes use a digit boundary
@@ -420,16 +419,6 @@ var legacyOpenclawCLITimeoutReasons = map[string]bool{
 	"agent_error":                      true,
 }
 
-// legacyConcurrentRequestLimitReasons are the stale buckets emitted by daemons
-// whose classifier lets a generic HTTP 403 win over this transient wire shape.
-// The refined auth bucket is the observed Claude Code result; unknown and
-// agent_error cover older classifier generations.
-var legacyConcurrentRequestLimitReasons = map[string]bool{
-	string(ReasonAgentProviderAuthOrAccess): true,
-	string(ReasonAgentUnknown):              true,
-	"agent_error":                           true,
-}
-
 func isPiProviderNetworkError(lower string) bool {
 	for _, message := range []string{"connection error.", "request timed out."} {
 		if lower == message ||
@@ -462,6 +451,17 @@ var legacyOpencodeStreamEndedReasons = map[string]bool{
 	string(ReasonAgentProcessFailure): true,
 	string(ReasonAgentUnknown):        true,
 	"agent_error":                     true,
+}
+
+// legacyConcurrentRequestLimitReasons are the stale buckets emitted by daemons
+// whose classifiers let a generic token/context or HTTP 403 rule win over this
+// more specific wire shape. The raw witness keeps the upgrade narrow; unrelated
+// context overflows and authentication failures retain their original reason.
+var legacyConcurrentRequestLimitReasons = map[string]bool{
+	string(ReasonAgentContextOverflow):      true,
+	string(ReasonAgentProviderAuthOrAccess): true,
+	string(ReasonAgentUnknown):              true,
+	"agent_error":                           true,
 }
 
 // NormalizeDaemonReason upgrades a failure_reason reported by an older daemon

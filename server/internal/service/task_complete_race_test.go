@@ -309,9 +309,7 @@ func TestRuntimeCLITimeoutIsNotAutoRetried(t *testing.T) {
 }
 
 func TestConcurrentRequestLimitRetries(t *testing.T) {
-	const raw = "Failed to authenticate. API Error: 403 You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again."
-
-	resolveReason := func(reported string) string {
+	resolveReason := func(reported, raw string) string {
 		if reported == "" {
 			reported = taskfailure.Classify(raw).String()
 		}
@@ -321,12 +319,29 @@ func TestConcurrentRequestLimitRetries(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		reported string
+		raw      string
 	}{
-		{name: "current daemon", reported: ""},
-		{name: "older daemon classified 403 as auth", reported: string(taskfailure.ReasonAgentProviderAuthOrAccess)},
+		{
+			name: "current daemon auth prefix",
+			raw:  "Failed to authenticate. API Error: 403 You've reached your concurrent request limit. Please wait for your ongoing requests to finish and try again.",
+		},
+		{
+			name: "current daemon access token prefix",
+			raw:  "Failed to refresh access token. API Error: 403 You've reached your concurrent request limit.",
+		},
+		{
+			name:     "older daemon classified 403 as auth",
+			reported: string(taskfailure.ReasonAgentProviderAuthOrAccess),
+			raw:      "Failed to authenticate. API Error: 403 You've reached your concurrent request limit.",
+		},
+		{
+			name:     "older daemon classified token text as context overflow",
+			reported: string(taskfailure.ReasonAgentContextOverflow),
+			raw:      "Failed to refresh access token. API Error: 403 You've reached your concurrent request limit.",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reason := resolveReason(tc.reported)
+			reason := resolveReason(tc.reported, tc.raw)
 			if reason != string(taskfailure.ReasonAgentProviderCapacityOrRateLimit) {
 				t.Fatalf("resolved reason = %q, want %q", reason, taskfailure.ReasonAgentProviderCapacityOrRateLimit)
 			}
