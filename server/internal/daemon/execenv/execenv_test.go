@@ -6925,6 +6925,23 @@ func TestClaimEnvRootRecoversOwnerTempLeftBeforeRename(t *testing.T) {
 	}
 }
 
+func TestReuseCodexRejectsUnusableHome(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	root := t.TempDir()
+	workDir := filepath.Join(root, "workdir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file blocks home preparation deterministically without relying
+	// on permission checks or accessing a real Codex installation or account.
+	if err := os.WriteFile(filepath.Join(root, codexHomeDirName), []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if env := Reuse(ReuseParams{WorkDir: workDir, Provider: "codex"}, testLogger()); env != nil {
+		t.Fatalf("unusable Codex home must decline reuse, got environment with CodexHome=%q", env.CodexHome)
+	}
+}
+
 // TestReleaseLockFreesEnvRootForALaterDispatch pins the lifetime rule that
 // Windows CI surfaced: the lock belongs to the task EXECUTION, and nothing in
 // production calls Environment.Cleanup — the GC reclaims env roots on its own
