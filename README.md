@@ -31,7 +31,7 @@
 
 ## 已被上游合并的贡献
 
-截至 2026-09-09，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 7 个 PR 已全部正式合并（日期按 GitHub UTC）：
+截至 2026-09-10，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 8 个 PR 已全部正式合并（日期按 GitHub UTC）：
 
 | PR | 上游获得的能力 | 合并日期 |
 | --- | --- | --- |
@@ -41,7 +41,8 @@
 | [#7760 · Pi session continuity](https://github.com/multica-ai/multica/pull/7760) | Pi/OMP 使用独立 JSONL session 时不再被 workdir 变化错误阻断恢复 | 2026-08-31 |
 | [#7790 · Codex thread handshake budget](https://github.com/multica-ai/multica/pull/7790) | 为 `thread/start` / `thread/resume` 设置独立的 60 秒默认预算，轻量 RPC 继续保持 30 秒 | 2026-08-31 |
 | [#7798 · require proven task ownership before GC mutation](https://github.com/multica-ai/multica/pull/7798) | GC 修改磁盘前必须先用 `.task_owner` 证明目录由 Multica 创建，普通目录不会再因为够旧或缺少完成信息就被递归删除。这项修复来自一次误删 20 GB 以上文件的真实事故，把“无法确认归属”改成保留目录，而不是猜测删除。 | 2026-09-01 |
-| [#8200 · classify concurrent request rejections](https://github.com/multica-ai/multica/pull/8200) | 将带有 `concurrent request limit` 的 provider 403 正确识别为临时容量限制，不再误导用户重新登录或把正常会话判成上下文溢出 | 2026-09-09 |
+| [#8200 · classify concurrent request rejections](https://github.com/multica-ai/multica/pull/8200) | 将带有 `concurrent request limit` 的 provider 403 正确识别为临时容量限制，不再误导用户重新登录或把正常会话判成上下文溢出。[维护者评价](https://github.com/multica-ai/multica/pull/8200#issuecomment-5598511185) | 2026-09-09 |
+| [#8236 · decline Codex reuse when home preparation fails](https://github.com/multica-ai/multica/pull/8236) | Codex 会话目录准备失败时拒绝复用，转入已有的环境重新准备流程，避免缺少 `CODEX_HOME` 时误用默认或继承的会话目录 | 2026-09-10 |
 
 ## 这个分支解决什么问题
 
