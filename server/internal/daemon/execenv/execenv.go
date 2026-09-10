@@ -915,8 +915,13 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(env.RootDir, codexHomeDirName)
 		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, ResumeSessionID: params.ResumeSessionID, IsLocalDirectory: params.LocalDirectory, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
-			// Never return an environment that silently drops the task's home
-			// and launches Codex against an ambient, unrelated session store.
+			// Leaving env.CodexHome empty does not launch Codex against an
+			// ambient home: configureCodexTaskShellEnvironment rejects the empty
+			// value ("task CODEX_HOME is missing") and the run fails before
+			// launch. Decline the reuse instead, so the caller falls back to
+			// Prepare and the task still gets a usable task-local home. The
+			// prior session is not carried over, and a fresh Prepare that fails
+			// the same way still stops the task.
 			logger.Warn("execenv: refresh codex-home failed; forcing fresh prepare", "error", err)
 			return nil
 		} else {

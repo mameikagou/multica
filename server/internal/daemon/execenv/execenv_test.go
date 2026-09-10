@@ -4239,8 +4239,8 @@ func TestResolveWindowsSandboxStateFailsClosed(t *testing.T) {
 // warned and returned success, so the task launched with the stale
 // danger-full-access — the decision failed closed while the effective config
 // failed open. prepareCodexHomeWithOpts must now return an error, which blocks
-// startup on both paths (fresh Prepare fails the task; Reuse leaves
-// env.CodexHome unset, which configureCodexTaskShellEnvironment refuses).
+// startup on both paths (fresh Prepare fails the task; Reuse declines the
+// reuse and falls back to Prepare, which re-runs this check on a fresh home).
 func TestPrepareCodexHomeFailsClosedWhenSandboxWriteFails(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root bypasses the read-only permissions this test relies on")
@@ -6925,6 +6925,10 @@ func TestClaimEnvRootRecoversOwnerTempLeftBeforeRename(t *testing.T) {
 	}
 }
 
+// TestReuseCodexRejectsUnusableHome pins the reuse contract for a task-local
+// Codex home that cannot be prepared: Reuse must decline (return nil) so the
+// caller falls back to Prepare, instead of handing back an environment with an
+// empty CodexHome that only fails later at launch.
 func TestReuseCodexRejectsUnusableHome(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	root := t.TempDir()
