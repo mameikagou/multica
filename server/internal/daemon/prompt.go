@@ -769,6 +769,20 @@ func buildTaskExecutionPrompt(task Task, provider string, options ...PromptOptio
 	return BuildPrompt(task, provider, options...)
 }
 
+// buildTaskExecutionPrompts keeps Codex's cold-start prompt until the backend
+// has positively confirmed thread/resume. Codex can handle a recoverable
+// resume rejection by falling back to thread/start inside one Execute call;
+// selecting the delta here solely from PriorSessionID would therefore feed a
+// brand-new thread the resumed prompt. Other providers retain the shared
+// pre-selection path until their backends expose the same confirmed-resume
+// choice.
+func buildTaskExecutionPrompts(task Task, provider string, options ...PromptOption) (prompt, resumedPrompt string) {
+	if provider == "codex" && shouldUseResumedWebDirectPrompt(task) {
+		return BuildPrompt(task, provider, options...), buildResumedWebDirectPrompt(task, options...)
+	}
+	return buildTaskExecutionPrompt(task, provider, options...), ""
+}
+
 // shouldUseResumedWebDirectPrompt limits the compact follow-up to resumed chats
 // on Multica's creator-only web/mobile surface. Channel-backed conversations
 // keep their per-turn audience and delivery instructions, including p2p rooms.

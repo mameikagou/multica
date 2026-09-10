@@ -72,6 +72,12 @@ type ExecOptions struct {
 	// HandshakeTimeout; when both are zero Codex uses separate built-in defaults.
 	ThreadHandshakeTimeout time.Duration
 	ResumeSessionID        string // if non-empty, resume a previous agent session
+	// ResumedPrompt optionally replaces the ordinary prompt after a backend has
+	// positively confirmed that it resumed the requested session. Keeping the
+	// cold-start prompt alongside this delta matters for backends such as Codex
+	// that can reject thread/resume and fall back to thread/start internally.
+	// Empty preserves the ordinary prompt. Currently honoured by Codex.
+	ResumedPrompt string
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the

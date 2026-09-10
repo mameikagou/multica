@@ -1049,6 +1049,36 @@ func TestBuildTaskExecutionPromptKeepsFullContextWithoutPriorSession(t *testing.
 	}
 }
 
+func TestBuildTaskExecutionPromptsDefersCodexDeltaUntilConfirmedResume(t *testing.T) {
+	t.Parallel()
+
+	task := Task{
+		ChatSessionID:  "chat-1",
+		PriorSessionID: "session-1",
+		ChatMessage:    "只保留这条消息",
+		InitiatorName:  "stable-initiator",
+	}
+	full, resumed := buildTaskExecutionPrompts(task, "codex")
+	for _, want := range []string{
+		"You are running as a chat assistant",
+		"Audience: direct room",
+		"User message:\n只保留这条消息",
+		"multica attachment upload",
+	} {
+		if !strings.Contains(full, want) {
+			t.Errorf("codex cold/fallback prompt missing %q\n---\n%s", want, full)
+		}
+	}
+	if resumed != task.ChatMessage {
+		t.Fatalf("codex confirmed-resume prompt = %q, want raw message %q", resumed, task.ChatMessage)
+	}
+
+	primary, alternate := buildTaskExecutionPrompts(task, "claude")
+	if primary != task.ChatMessage || alternate != "" {
+		t.Fatalf("non-codex prompt pair = (%q, %q), want shared delta and no alternate", primary, alternate)
+	}
+}
+
 func TestBuildChatPromptAgentIntro(t *testing.T) {
 	// Historical proactive-introduction sessions remain readable even though
 	// new agent creation no longer creates one. Their message-less first turn

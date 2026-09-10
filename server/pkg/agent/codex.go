@@ -1553,9 +1553,10 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		// Whether that notice asks the agent to tell the USER is the caller's
 		// call, not ours: it depends on whether this surface's conversation is
 		// still readable, which this package cannot see (MUL-5722).
+		turnPrompt := codexPromptForThread(prompt, opts.ResumedPrompt, resumed)
 		turnParams := map[string]any{
 			"threadId": threadID,
-			"input":    codexTurnInput(prompt, opts.ResumeExpected, resumed, opts.ResumeContinuityNotice),
+			"input":    codexTurnInput(turnPrompt, opts.ResumeExpected, resumed, opts.ResumeContinuityNotice),
 		}
 		// Per-turn reasoning override. Mirrors the per-thread injection in
 		// startOrResumeThread; keeping both in sync is enforced by the
@@ -1909,6 +1910,13 @@ func codexTurnInput(prompt string, resumeExpected, resumed bool, notice string) 
 		text = notice + prompt
 	}
 	return []map[string]any{{"type": "text", "text": text}}
+}
+
+func codexPromptForThread(prompt, resumedPrompt string, resumed bool) string {
+	if resumed && resumedPrompt != "" {
+		return resumedPrompt
+	}
+	return prompt
 }
 
 // startOrResumeThread picks between Codex's thread/resume and thread/start
