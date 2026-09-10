@@ -117,6 +117,8 @@ These are hard requirements for every new or modified database design and produc
 
 ## Coding Rules
 
+- Before changing session resume, prompt selection, retry behavior, or merging upstream daemon/provider changes, read [CORE_DESIGN.md](CORE_DESIGN.md). Preserve its conversation-continuity contract and distinguish full current-turn prompts from persisted chat history.
+
 - TypeScript strict mode is enabled; keep types explicit.
 - Go follows standard conventions: `gofmt`, `go vet`, checked errors.
 - Code comments must be English.

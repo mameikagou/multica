@@ -2,6 +2,8 @@
 
 The `multica` CLI connects your local machine to Multica. It handles authentication, workspace management, issue tracking, and runs the agent daemon that executes AI tasks locally.
 
+For maintenance and upstream upgrades, see [Core Design: Conversation Continuity](CORE_DESIGN.md) for the session-resume contract, provider differences, and verification requirements.
+
 ## Installation
 
 ### Homebrew (macOS/Linux)
