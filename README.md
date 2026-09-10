@@ -42,7 +42,21 @@
 | [#7790 · Codex thread handshake budget](https://github.com/multica-ai/multica/pull/7790) | 为 `thread/start` / `thread/resume` 设置独立的 60 秒默认预算，轻量 RPC 继续保持 30 秒 | 2026-08-31 |
 | [#7798 · require proven task ownership before GC mutation](https://github.com/multica-ai/multica/pull/7798) | GC 修改磁盘前必须先用 `.task_owner` 证明目录由 Multica 创建，普通目录不会再因为够旧或缺少完成信息就被递归删除。这项修复来自一次误删 20 GB 以上文件的真实事故，把“无法确认归属”改成保留目录，而不是猜测删除。 | 2026-09-01 |
 | [#8200 · classify concurrent request rejections](https://github.com/multica-ai/multica/pull/8200) | 将带有 `concurrent request limit` 的 provider 403 正确识别为临时容量限制，不再误导用户重新登录或把正常会话判成上下文溢出。[维护者评价](https://github.com/multica-ai/multica/pull/8200#issuecomment-5598511185) | 2026-09-09 |
-| [#8236 · decline Codex reuse when home preparation fails](https://github.com/multica-ai/multica/pull/8236) | Codex 会话目录准备失败时拒绝复用，转入已有的环境重新准备流程，避免缺少 `CODEX_HOME` 时误用默认或继承的会话目录 | 2026-09-10 |
+| [#8236 · decline Codex reuse when home preparation fails](https://github.com/multica-ai/multica/pull/8236) | 旧 Codex 会话目录准备失败时，转入新环境准备流程，让局限于旧目录的故障不再直接终止任务；正常会话复用不变。[维护者评价](https://github.com/multica-ai/multica/pull/8236#issuecomment-5614768067) | 2026-09-10 |
+
+### 维护者评价
+
+**#8200：发现真实缺陷，也把审查意见落实到了测试。**
+
+> "Thank you — this was a good contribution, and worth saying why."
+
+维护者 Bohan-J 肯定了几个具体点：从真实事故中发现尚无人报告的错误分类；按审查意见拆分 PR，保持自动重试逻辑不变；修正分类规则顺序，而非只让测试通过；主动用测试固定“不自动重试”的边界，并查明离线回填脚本不在仓库内、写清后续所需处理。[查看完整评价](https://github.com/multica-ai/multica/pull/8200#issuecomment-5598511185)
+
+**#8236：用确定性回归测试证明修复。**
+
+> "Thanks for the fix, @mameikagou — and for the deterministic regression test that fails on main and passes here."
+
+维护者 Bohan-J 明确感谢了修复，以及在主分支失败、修复后通过的回归测试。同时指出并在合并前纠正了原描述：旧代码会被启动前检查拦住，不会误用默认会话目录；这项修复的价值是提供重新准备环境的恢复路径。代价也明确保留：放弃复用后，不会自动延续旧 Codex 会话或搬运旧工作目录内容；若新环境仍无法准备，任务仍会报错。[查看完整评价](https://github.com/multica-ai/multica/pull/8236#issuecomment-5614768067)
 
 ## 这个分支解决什么问题
 
