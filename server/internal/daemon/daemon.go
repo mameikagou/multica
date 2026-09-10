@@ -580,6 +580,11 @@ type Daemon struct {
 	activeEnvRoots     map[string]int  // env root path -> reference count (handles reuse paths marked twice)
 	deletingEnvRoots   map[string]bool // env roots reserved by GC; new tasks wait until the mutation finishes
 
+	// Publish every held environment claim with its exact release signal.
+	// Follow-up turns can subscribe atomically instead of missing the handoff.
+	envRootClaimsMu sync.Mutex
+	envRootClaims   map[string]*envRootClaimHandoff
+
 	activeStoresMu   sync.Mutex
 	activeStoresCond *sync.Cond      // signalled when an in-flight store deletion finishes, so a blocked markActive can proceed
 	activeStores     map[string]int  // persistent store path (per-conversation Codex sessions, per-agent Hermes memories) -> live-task refcount; guards the store from GC mid-task (MUL-4424)
@@ -655,6 +660,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		resolvedPaths:             make(map[string]healedAgent),
 		wsHBLastAck:               make(map[string]time.Time),
 		activeEnvRoots:            make(map[string]int),
+		envRootClaims:             make(map[string]*envRootClaimHandoff),
 		deletingEnvRoots:          make(map[string]bool),
 		activeStores:              make(map[string]int),
 		deletingStores:            make(map[string]bool),
@@ -6189,6 +6195,12 @@ func gateResumeToReachableSession(task *Task, taskCtx *execenv.TaskContextForEnv
 	var reachable bool
 	if providerUsesPiSessionFile(provider) {
 		reachable = piSessionResumable(task.PriorSessionID, refusesMissingSessionCwd)
+	} else if provider == "codex" {
+		// Codex addresses a thread by ID in CODEX_HOME, not by cwd. The
+		// rollout-presence gate below is the authoritative resume proof.
+		// Preserve the old fork's cwd-independent resume when a chat moves
+		// from native cwd to managed execution or needs a fresh task root.
+		reachable = task.PriorSessionID != "" && sessionHomeReachable
 	} else {
 		// Compare the directories, not the spelling. Reuse runs in the canonical
 		// path it validated and locked, which need not be character-identical to
@@ -6956,7 +6968,7 @@ func (d *Daemon) lockReusablePriorEnvRoot(ctx context.Context, task Task, localA
 	if !os.SameFile(validatedInfo, lockedInfo) {
 		d.logger.Info("prior workdir changed identity before it could be claimed; starting a fresh environment",
 			"task", task.ID)
-		claim.Release()
+		d.releaseEnvRootClaim(claim)
 		return nil, "", nil, false, nil
 	}
 
@@ -6968,7 +6980,7 @@ func (d *Daemon) lockReusablePriorEnvRoot(ctx context.Context, task Task, localA
 	// not spelling.
 	recheckedWorkDir, stillOK := shouldReusePriorWorkdir(task, localAssignment, d.cfg.WorkspacesRoot)
 	if !stillOK || recheckedWorkDir != workDir {
-		claim.Release()
+		d.releaseEnvRootClaim(claim)
 		return nil, "", nil, false, nil
 	}
 	// ...and the directory we are about to hand to Reuse has to be that same
@@ -6977,7 +6989,7 @@ func (d *Daemon) lockReusablePriorEnvRoot(ctx context.Context, task Task, localA
 	if err != nil || !os.SameFile(lockedInfo, currentInfo) {
 		d.logger.Info("prior workdir changed identity while being claimed; starting a fresh environment",
 			"task", task.ID)
-		claim.Release()
+		d.releaseEnvRootClaim(claim)
 		return nil, "", nil, false, nil
 	}
 	return claim, workDir, lockedInfo, true, nil
@@ -7024,7 +7036,7 @@ func (d *Daemon) lockEnvRootForReuseWaitingOutTheBusyWindow(
 	deadline := start.Add(d.envRootBusyWait)
 	waited := false
 	for {
-		claim, info, err := execenv.LockEnvRootForReuse(wsRoot, rel, priorRoot)
+		claim, info, released, err := d.lockEnvRootForReuse(wsRoot, rel, priorRoot)
 		if !errors.Is(err, execenv.ErrEnvRootBusy) || !time.Now().Before(deadline) {
 			// The wait's real duration is logged, not the budget: 15s is a
 			// reasoned guess (one cancel-poll interval plus the agent's exit),
@@ -7054,6 +7066,9 @@ func (d *Daemon) lockEnvRootForReuseWaitingOutTheBusyWindow(
 			// would file one cancellation under both "cancelled" and "budget
 			// exhausted" in the very logs the budget is meant to be judged by.
 			return nil, nil, fmt.Errorf("%w: %w", errPriorEnvRootWaitAborted, context.Cause(ctx))
+		case <-released:
+			// The release notification is only a wakeup. Retake the OS lock
+			// and revalidate ownership before reusing the environment.
 		case <-time.After(envRootBusyRetryInterval):
 		}
 	}
@@ -7519,11 +7534,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// *os.File cannot cross its JSON response back to us. Claiming there would
 	// leave the agent running with no protection at all — which is exactly the
 	// re-dispatch window this guards.
-	envClaim, err := execenv.ClaimEnvRoot(taskRootDirParams(d.cfg.WorkspacesRoot, task))
+	envClaim, err := d.claimEnvRoot(taskRootDirParams(d.cfg.WorkspacesRoot, task))
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("claim execution environment: %w", err)
 	}
-	defer envClaim.Release()
+	defer d.releaseEnvRootClaim(envClaim)
 
 	// Try to reuse the workdir from a previous task on the same (agent, issue) pair.
 	var env *execenv.Environment
@@ -7744,7 +7759,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, reuseErr
 	}
 	if reusable {
-		defer priorClaim.Release()
+		defer d.releaseEnvRootClaim(priorClaim)
 		// Deterministic seam for the last-window regression: tests swap the
 		// directory here, after the claim is settled and before Reuse resolves
 		// the path by name.
@@ -7800,13 +7815,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env == nil {
 		var err error
 		prepParams := execenv.PrepareParams{
-			WorkspacesRoot:  d.cfg.WorkspacesRoot,
-			Profile:         d.cfg.Profile,
-			WorkspaceID:     task.WorkspaceID,
-			WorkspaceSlug:   task.WorkspaceSlug,
-			TaskID:          task.ID,
-			IssueIdentifier: task.IssueIdentifier,
-			AgentName:       agentName,
+			CodexResumeSessionID: task.PriorSessionID,
+			WorkspacesRoot:       d.cfg.WorkspacesRoot,
+			Profile:              d.cfg.Profile,
+			WorkspaceID:          task.WorkspaceID,
+			WorkspaceSlug:        task.WorkspaceSlug,
+			TaskID:               task.ID,
+			IssueIdentifier:      task.IssueIdentifier,
+			AgentName:            agentName,
 			// This run already holds the claim (envClaim above) and the reset
 			// it implies; preparation must not try to take it again.
 			EnvRootPreclaimed:     true,
@@ -7824,6 +7840,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			ReasonixEnv:           reasonixEnv,
 			CodexCustomArgs:       codexSandboxArgs,
 			Task:                  taskCtx,
+		}
+		// Reuse may decline even after its prior root was validated and locked.
+		// Keep the old fork's single-rollout handoff, but only from the exact
+		// managed directory whose identity is still protected by that claim.
+		if provider == "codex" && reusable && lockedPriorInfo != nil {
+			verifiedDir, owned := shouldReusePriorWorkdir(task, localAssignment, d.cfg.WorkspacesRoot)
+			currentInfo, statErr := os.Stat(filepath.Dir(priorWorkDir))
+			if owned && verifiedDir == priorWorkDir && statErr == nil && os.SameFile(lockedPriorInfo, currentInfo) {
+				prepParams.CodexResumeSessionsSource = filepath.Join(filepath.Dir(priorWorkDir), "codex-home", "sessions")
+			}
 		}
 		if localAssignment.UsesWorktree() {
 			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{LocalPath: localAssignment.AbsPath}
@@ -8079,7 +8105,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		providerRefusesMissingSessionCwd(provider, !usesCustomProfileCommand),
 		taskLog,
 	)
-	// A reused workdir is necessary but not sufficient for a Codex resume: the
+	// A reused workdir is not required for a Codex resume: the
 	// prior thread's rollout must actually be present in this task's CODEX_HOME
 	// sessions (MUL-4424 isolates them). Drop the resume before the brief is
 	// generated below if it isn't, so we never tell the agent it is continuing a
@@ -9639,6 +9665,84 @@ func convertProjectResourcesForEnv(resources []ProjectResourceData) []execenv.Pr
 		}
 	}
 	return result
+}
+
+type envRootClaimHandoff struct {
+	claim    *execenv.EnvRootClaim
+	released chan struct{}
+}
+
+// claimEnvRoot takes and publishes a fresh-root claim atomically with respect
+// to reuse attempts in this daemon. Publishing under the same mutex used by
+// lockEnvRootForReuse means a waiter can never observe ErrEnvRootBusy before
+// the matching release signal exists.
+func (d *Daemon) claimEnvRoot(params execenv.RootDirParams) (*execenv.EnvRootClaim, error) {
+	d.envRootClaimsMu.Lock()
+	defer d.envRootClaimsMu.Unlock()
+	claim, err := execenv.ClaimEnvRoot(params)
+	if err != nil {
+		return nil, err
+	}
+	d.trackEnvRootClaimLocked(claim)
+	return claim, nil
+}
+
+// lockEnvRootForReuse takes a reusable-root claim or, when this daemon already
+// owns the busy root, returns the current owner's exact release signal.
+func (d *Daemon) lockEnvRootForReuse(wsRoot *os.Root, rel, envRoot string) (*execenv.EnvRootClaim, os.FileInfo, <-chan struct{}, error) {
+	d.envRootClaimsMu.Lock()
+	defer d.envRootClaimsMu.Unlock()
+	claim, info, err := execenv.LockEnvRootForReuse(wsRoot, rel, envRoot)
+	if err == nil && claim != nil {
+		d.trackEnvRootClaimLocked(claim)
+		return claim, info, nil, nil
+	}
+	if errors.Is(err, execenv.ErrEnvRootBusy) {
+		if handoff := d.envRootClaims[envRootClaimKey(envRoot)]; handoff != nil {
+			return nil, info, handoff.released, err
+		}
+	}
+	return claim, info, nil, err
+}
+
+func (d *Daemon) trackEnvRootClaimLocked(claim *execenv.EnvRootClaim) {
+	if claim == nil || claim.RootDir() == "" {
+		return
+	}
+	if d.envRootClaims == nil {
+		d.envRootClaims = make(map[string]*envRootClaimHandoff)
+	}
+	d.envRootClaims[envRootClaimKey(claim.RootDir())] = &envRootClaimHandoff{
+		claim:    claim,
+		released: make(chan struct{}),
+	}
+}
+
+func envRootClaimKey(envRoot string) string {
+	canonical, err := filepath.EvalSymlinks(envRoot)
+	if err == nil {
+		return canonical
+	}
+	return filepath.Clean(envRoot)
+}
+
+// releaseEnvRootClaim drops the OS lock before waking its waiter. Holding the
+// registry mutex across both operations prevents a replacement from missing
+// the release and subscribing to stale state.
+func (d *Daemon) releaseEnvRootClaim(claim *execenv.EnvRootClaim) {
+	if claim == nil {
+		return
+	}
+	d.envRootClaimsMu.Lock()
+	defer d.envRootClaimsMu.Unlock()
+	root := envRootClaimKey(claim.RootDir())
+	handoff := d.envRootClaims[root]
+	claim.Release()
+	if handoff == nil || handoff.claim != claim {
+		return
+	}
+	delete(d.envRootClaims, root)
+	close(handoff.released)
 }
 
 // markActiveEnvRoot records that a task is currently using the given env root,

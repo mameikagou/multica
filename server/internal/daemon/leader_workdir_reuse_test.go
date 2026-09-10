@@ -479,11 +479,11 @@ func TestLockReusablePriorEnvRootNeverWritesOutsideWorkspacesRoot(t *testing.T) 
 				PriorWorkDir: priorWorkDir,
 			}, nil, "")
 			if ok {
-				claim.Release()
+				d.releaseEnvRootClaim(claim)
 				t.Fatal("unvalidated prior workdir was accepted for reuse")
 			}
 			if claim != nil {
-				claim.Release()
+				d.releaseEnvRootClaim(claim)
 				t.Fatal("declined reuse still returned a claim")
 			}
 			if found := findTaskLocks(t, outside); len(found) > 0 {
@@ -562,16 +562,16 @@ func TestLockReusablePriorEnvRootLocksAValidatedRoot(t *testing.T) {
 
 	// A concurrent continuation of the same task must not get the same root.
 	if second, _, _, ok, _ := d.lockReusablePriorEnvRoot(context.Background(), task, nil, ""); ok {
-		second.Release()
+		d.releaseEnvRootClaim(second)
 		t.Fatal("two continuations locked the same prior workdir at once")
 	}
 
-	claim.Release()
+	d.releaseEnvRootClaim(claim)
 	again, _, _, ok, _ := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if !ok {
 		t.Fatal("prior workdir stayed locked after release")
 	}
-	again.Release()
+	d.releaseEnvRootClaim(again)
 }
 
 // TestLockReusablePriorEnvRootWaitsOutTheDyingPredecessor is MUL-6880.
@@ -609,7 +609,7 @@ func TestLockReusablePriorEnvRootWaitsOutTheDyingPredecessor(t *testing.T) {
 	const exitAfter = 300 * time.Millisecond
 	go func() {
 		time.Sleep(exitAfter)
-		predecessor.Release()
+		d.releaseEnvRootClaim(predecessor)
 	}()
 
 	start := time.Now()
@@ -618,7 +618,7 @@ func TestLockReusablePriorEnvRootWaitsOutTheDyingPredecessor(t *testing.T) {
 	if !ok {
 		t.Fatal("the successor abandoned the workdir its predecessor was still exiting from: that is the lost session")
 	}
-	defer claim.Release()
+	defer d.releaseEnvRootClaim(claim)
 	if canonical == "" {
 		t.Fatal("accepted reuse without returning the canonical workdir")
 	}
@@ -650,13 +650,13 @@ func TestLockReusablePriorEnvRootStopsWaitingWhenTheLockNeverFrees(t *testing.T)
 	if !ok {
 		t.Fatal("could not set up the holder's claim")
 	}
-	defer held.Release()
+	defer d.releaseEnvRootClaim(held)
 
 	start := time.Now()
 	second, _, _, ok, _ := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	waited := time.Since(start)
 	if ok {
-		second.Release()
+		d.releaseEnvRootClaim(second)
 		t.Fatal("two continuations locked the same prior workdir at once")
 	}
 	if waited < budget {
@@ -683,7 +683,7 @@ func TestLockReusablePriorEnvRootStopsWaitingWhenTheContextEnds(t *testing.T) {
 	if !ok {
 		t.Fatal("could not set up the holder's claim")
 	}
-	defer held.Release()
+	defer d.releaseEnvRootClaim(held)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -693,7 +693,7 @@ func TestLockReusablePriorEnvRootStopsWaitingWhenTheContextEnds(t *testing.T) {
 	start := time.Now()
 	second, _, _, ok, err := d.lockReusablePriorEnvRoot(ctx, task, nil, "")
 	if ok {
-		second.Release()
+		d.releaseEnvRootClaim(second)
 		t.Fatal("took a lock that was never released")
 	}
 	if waited := time.Since(start); waited > 30*time.Second {
@@ -734,7 +734,7 @@ func TestRunTaskCancelledWaitingForThePriorWorkdirStopsInsteadOfPreparing(t *tes
 	if err != nil || !ok {
 		t.Fatalf("could not hold the prior env root: ok=%v err=%v", ok, err)
 	}
-	defer held.Release()
+	defer d.releaseEnvRootClaim(held)
 
 	var logs bytes.Buffer
 	d.logger = slog.New(slog.NewTextHandler(&logs, nil))
@@ -812,7 +812,7 @@ func TestLockReusablePriorEnvRootSurvivesRetargetAfterValidation(t *testing.T) {
 
 	claim, _, _, ok, _ := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if claim != nil {
-		claim.Release()
+		d.releaseEnvRootClaim(claim)
 	}
 	if ok {
 		t.Fatal("reuse was accepted after the validated root was retargeted")
@@ -858,7 +858,7 @@ func TestLockReusablePriorEnvRootRejectsIdentitySwap(t *testing.T) {
 
 	claim, used, _, ok, _ := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if claim != nil {
-		claim.Release()
+		d.releaseEnvRootClaim(claim)
 	}
 	if ok {
 		t.Fatalf("accepted reuse after the validated directory was replaced at the same path (would use %s)", used)
@@ -926,7 +926,7 @@ func TestLockReusablePriorEnvRootSurvivesWorkspacesRootSwap(t *testing.T) {
 
 	claim, _, _, ok, _ := d.lockReusablePriorEnvRoot(context.Background(), task, nil, "")
 	if claim != nil {
-		claim.Release()
+		d.releaseEnvRootClaim(claim)
 	}
 	if ok {
 		t.Fatal("reuse was accepted after the workspaces root itself was replaced")

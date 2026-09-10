@@ -63,6 +63,12 @@ type CodexHomeOptions struct {
 	// whole shared history back in. Empty means a fresh thread (no rollout to
 	// expose). See prepareCodexSessionsDir (MUL-4424).
 	ResumeSessionID string
+	// ResumeSessionsSource is an ownership-verified prior task's sessions
+	// directory. Expose only ResumeSessionID, never its unrelated history.
+	ResumeSessionsSource string
+	// PersistentSessionStore keeps chat history independent of task directories.
+	// This is the old native-cwd persistence policy without changing the cwd.
+	PersistentSessionStore bool
 	// IsLocalDirectory marks a task whose env root is never reused across task
 	// IDs — every local_directory task, in_place or worktree. Worktree tasks
 	// get a fresh env root per task just like in-place ones do
@@ -569,6 +575,10 @@ func dirStat(dir string) (newest time.Time, size int64) {
 func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions, logger *slog.Logger) error {
 	dst := filepath.Join(codexHome, "sessions")
 	sharedSessions := filepath.Join(sharedHome, "sessions")
+	resumeSessions := sharedSessions
+	if opts.ResumeSessionsSource != "" && len(findCodexRollouts(opts.ResumeSessionsSource, opts.ResumeSessionID)) > 0 {
+		resumeSessions = opts.ResumeSessionsSource
+	}
 	storeDir := codexSessionStoreDir(sharedHome, opts.SessionStoreKey)
 
 	// local_directory tasks have no reusable envRoot, so their history can only
@@ -581,18 +591,29 @@ func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions
 			// empty local dir rather than re-exposing the whole shared history.
 			return os.MkdirAll(dst, 0o755)
 		}
-		return linkCodexSessionsToStore(dst, storeDir, sharedSessions, opts.ResumeSessionID, logger)
+		return linkCodexSessionsToStore(dst, storeDir, resumeSessions, opts.ResumeSessionID, logger)
 	}
 
 	fi, err := os.Lstat(dst)
 	switch {
 	case os.IsNotExist(err):
+		if opts.PersistentSessionStore && storeDir != "" {
+			return linkCodexSessionsToStore(dst, storeDir, resumeSessions, opts.ResumeSessionID, logger)
+		}
 		return os.MkdirAll(dst, 0o755) // fresh managed task — empty local dir
 	case err != nil:
 		return fmt.Errorf("stat sessions dir %s: %w", dst, err)
 	}
 
 	if fi.Mode()&os.ModeSymlink == 0 {
+		// Preserve the authoritative legacy directory. Export only this chat's
+		// requested rollout so a future task can mount it without needing this
+		// cwd; never replace or delete an existing transcript directory.
+		if opts.PersistentSessionStore && storeDir != "" && opts.ResumeSessionID != "" && len(findCodexRollouts(storeDir, opts.ResumeSessionID)) == 0 && len(findCodexRollouts(dst, opts.ResumeSessionID)) > 0 {
+			if err := exposeResumeRollout(dst, storeDir, opts.ResumeSessionID, logger); err != nil {
+				return fmt.Errorf("persist prior chat rollout: %w", err)
+			}
+		}
 		// Already a real directory (task-local, authoritative). Ensure it
 		// exists (no-op) and leave its contents alone.
 		return os.MkdirAll(dst, 0o755)
@@ -603,7 +624,7 @@ func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions
 	// the store link and the resume rollout, then leave it.
 	if storeDir != "" {
 		if target, rlErr := os.Readlink(dst); rlErr == nil && sameCodexPath(target, storeDir) {
-			return linkCodexSessionsToStore(dst, storeDir, sharedSessions, opts.ResumeSessionID, logger)
+			return linkCodexSessionsToStore(dst, storeDir, resumeSessions, opts.ResumeSessionID, logger)
 		}
 	}
 
@@ -622,7 +643,7 @@ func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions
 	if opts.ResumeSessionID != "" && storeDir != "" {
 		logger.Info("execenv: migrated codex-home sessions from shared symlink to per-issue store",
 			"codex_home", codexHome, "resume_session", true)
-		return linkCodexSessionsToStore(dst, storeDir, sharedSessions, opts.ResumeSessionID, logger)
+		return linkCodexSessionsToStore(dst, storeDir, resumeSessions, opts.ResumeSessionID, logger)
 	}
 	logger.Info("execenv: migrated codex-home sessions from shared symlink to task-local dir",
 		"codex_home", codexHome, "resume_session", false)

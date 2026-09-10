@@ -4,8 +4,55 @@ This is the maintenance contract for this fork's session and prompt handling.
 Read it before rebasing, upgrading upstream, or changing daemon dispatch,
 provider resume, prompt construction, session storage, or retry behavior.
 The evidence below compares `local/native-context-chat-handoff` at
-`9f21d021d568bc6fa4f9a764fdb0c22876d05eaf` with the maintenance branch at
+`5f32662be3db2578d20c89b61046ae86cf4405af` with the maintenance branch at
 `6851caff182dc606c90df327ad97e3416645a2f0`.
+
+## Native-history handoff is independent of prompt selection
+
+The old fork's history-preservation design must survive removing the native-cwd
+feature. Do not remove its session storage and reachability rules together with
+its working-directory routing. These are separate responsibilities.
+
+- **Environment ownership, all providers:** restore the old daemon's claim
+  registry and one-shot release signals (`claimEnvRoot`, `lockEnvRootForReuse`,
+  `releaseEnvRootClaim`). Release the OS lock before waking the successor;
+  the successor must acquire the lock and revalidate the directory's ownership
+  and identity. The old branch tip still uses a bounded busy wait, with polling
+  for untracked holders; its release notification is not an unlimited-wait
+  guarantee. Cancellation must not fall through into fresh preparation.
+- **Codex history storage:** the old native-cwd path mounted a persistent store
+  keyed by profile, agent and conversation. Managed chats now retain that policy
+  without using native cwd. Newly prepared chat homes mount that store, so a
+  new task ID or changed workdir does not imply a new native conversation.
+  Existing task-local transcript directories remain intact; the requested
+  rollout is also linked into the scoped persistent store on reuse.
+- **Codex migration:** keep `CodexResumeSessionID` and the ownership-checked
+  `CodexResumeSessionsSource` plumbing from the old fork. If an environment
+  cannot be reused after claiming it, expose only the requested rollout from
+  that same validated, still-locked managed root. Never scan arbitrary user
+  directories or import another conversation's whole transcript collection.
+- **Codex resume eligibility:** working-directory equality is not the criterion.
+  Preserve the ID until the actual task `CODEX_HOME` has been checked for its
+  rollout. Existing history must reach `thread/resume`; missing history must
+  still be disclosed. This restores the old cwd-independent rule separately
+  from its excluded native-directory feature.
+- **Other providers:** retain Claude's `--resume`, Pi's `--session` file and
+  Antigravity's `--conversation`, plus their existing provider-specific failure
+  handling. Do not apply Codex's cwd-independent rule to cwd-keyed Claude stores.
+  Keep the upstream Windows Pi sidecar-lock fix; reverting it to a mandatory
+  lock on the transcript itself would prevent the CLI reading its own history.
+
+This is an adapted migration, not a byte-for-byte restoration of native cwd.
+The unchanged provider RPC fallback can still create a fresh session when the
+provider rejects history that the daemon found. Do not claim that prompt tests,
+filesystem tests or this migration prove every provider-side resume succeeds.
+
+Regression coverage: `codex_chat_handoff_test.go` in `internal/daemon` and
+`internal/daemon/execenv` covers old native store to managed chat, scoped legacy
+rollout migration, preservation of original files, conversation isolation,
+changed-cwd resume and honest disclosure when the rollout is absent. Existing
+`leader_workdir_reuse_test.go` covers cancellation, busy holders, release and
+ownership/identity revalidation. Test fixtures do not contact a real model.
 
 ## Three different kinds of context
 
