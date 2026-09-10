@@ -611,7 +611,9 @@ func prepareCodexSessionsDir(codexHome, sharedHome string, opts CodexHomeOptions
 		// cwd; never replace or delete an existing transcript directory.
 		if opts.PersistentSessionStore && storeDir != "" && opts.ResumeSessionID != "" && len(findCodexRollouts(storeDir, opts.ResumeSessionID)) == 0 && len(findCodexRollouts(dst, opts.ResumeSessionID)) > 0 {
 			if err := exposeResumeRollout(dst, storeDir, opts.ResumeSessionID, logger); err != nil {
-				return fmt.Errorf("persist prior chat rollout: %w", err)
+				// Persistence is optional while the original rollout is usable.
+				// Keep this home authoritative and retry export on the next reuse.
+				logger.Warn("execenv: chat rollout persistence deferred; keeping task-local history", "error", err)
 			}
 		}
 		// Already a real directory (task-local, authoritative). Ensure it

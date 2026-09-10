@@ -808,7 +808,8 @@ type ReuseParams struct {
 }
 
 // Reuse wraps an existing workdir into an Environment and refreshes context files.
-// Returns nil if the workdir does not exist (caller should fall back to Prepare).
+// Returns nil if the workdir does not exist or required provider setup fails
+// (caller should fall back to Prepare).
 func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	if _, err := os.Stat(params.WorkDir); err != nil {
 		return nil
@@ -918,7 +919,10 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(env.RootDir, codexHomeDirName)
 		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, ResumeSessionID: params.ResumeSessionID, PersistentSessionStore: params.Task.ChatSessionID != "", IsLocalDirectory: params.LocalDirectory, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
-			logger.Warn("execenv: refresh codex-home failed", "error", err)
+			// Never return an environment that silently drops the task's home
+			// and launches Codex against an ambient, unrelated session store.
+			logger.Warn("execenv: refresh codex-home failed; forcing fresh prepare", "error", err)
+			return nil
 		} else {
 			env.CodexHome = codexHome
 			if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {

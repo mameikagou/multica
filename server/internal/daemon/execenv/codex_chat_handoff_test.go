@@ -129,3 +129,83 @@ func TestCodexChatHandoffKeepsAuthoritativeLocalHistory(t *testing.T) {
 		t.Fatal("legacy history was not persisted for a future handoff")
 	}
 }
+
+func TestCodexChatHandoffRejectsUnusableHome(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	root := t.TempDir()
+	workDir := filepath.Join(root, "workdir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, codexHomeDirName), []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if env := Reuse(ReuseParams{WorkDir: workDir, Provider: "codex"}, testLogger()); env != nil {
+		t.Fatalf("unusable home returned an environment that could launch with ambient CODEX_HOME: %q", env.CodexHome)
+	}
+}
+
+func TestCodexChatHandoffDefersFailedExport(t *testing.T) {
+	shared := t.TempDir()
+	t.Setenv("CODEX_HOME", shared)
+	root := t.TempDir()
+	workDir := filepath.Join(root, "workdir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, codexHomeDirName)
+	task := TaskContextForEnv{AgentID: "agent-a", ChatSessionID: "chat-a"}
+	key := codexSessionStoreKey("test-profile", task)
+	store := codexSessionStoreDir(shared, key)
+	sessionID := "existing-thread"
+	rollout := seedFakeRollout(t, filepath.Join(home, "sessions"), "2026", "09", "09", sessionID, 32)
+	original, err := os.ReadFile(rollout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A file blocks the destination deterministically, even under a privileged
+	// test runner. The task-local transcript remains readable and authoritative.
+	if err := os.MkdirAll(filepath.Dir(store), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := CodexHomeOptions{PersistentSessionStore: true, SessionStoreKey: key, ResumeSessionID: sessionID}
+	if err := prepareCodexSessionsDir(home, shared, opts, testLogger()); err != nil {
+		t.Errorf("optional export invalidated usable task-local history: %v", err)
+	}
+	params := ReuseParams{WorkDir: workDir, Provider: "codex", CodexVersion: "0.151.0", Profile: "test-profile", Task: task, ResumeSessionID: sessionID}
+	reused := Reuse(params, testLogger())
+	if reused == nil || reused.CodexHome != home || !CodexResumeRolloutPresent(reused.CodexHome, sessionID) {
+		t.Fatal("failed export lost the reused home or its original rollout")
+	}
+	if info, err := os.Lstat(filepath.Join(home, "sessions")); err != nil || !info.IsDir() {
+		t.Fatalf("failed export replaced authoritative sessions directory: %v", err)
+	}
+	if len(findCodexRollouts(store, sessionID)) != 0 {
+		t.Fatal("blocked store unexpectedly contains exported history")
+	}
+	if err := os.Remove(store); err != nil {
+		t.Fatal(err)
+	}
+	// A later reuse must retry persistence without replacing local history.
+	reused = Reuse(params, testLogger())
+	if reused == nil || reused.CodexHome != home || !CodexResumeRolloutPresent(home, sessionID) {
+		t.Fatal("retry lost the original session")
+	}
+	if len(findCodexRollouts(store, sessionID)) != 1 {
+		t.Fatal("export did not recover after the destination became available")
+	}
+	current, err := os.ReadFile(rollout)
+	if err != nil || string(current) != string(original) {
+		t.Fatalf("export changed original transcript: %v", err)
+	}
+	newHome := t.TempDir()
+	if err := prepareCodexSessionsDir(newHome, shared, opts, testLogger()); err != nil {
+		t.Fatal(err)
+	}
+	if !CodexResumeRolloutPresent(newHome, sessionID) {
+		t.Fatal("recovered export cannot hand off to a new task home")
+	}
+}
