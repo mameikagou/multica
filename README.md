@@ -31,18 +31,21 @@
 
 ## 已被上游合并的贡献
 
-截至 2026-09-10，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 8 个 PR 已全部正式合并（日期按 GitHub UTC）：
+截至 2026-09-16，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 11 个 PR 已全部正式合并（日期按 GitHub UTC）：
 
 | PR | 上游获得的能力 | 合并日期 |
 | --- | --- | --- |
 | [#7331 · daemon server URL override](https://github.com/multica-ai/multica/pull/7331) | 自部署环境可用 `MULTICA_DAEMON_SERVER_URL` 分离公网 webhook 地址与 daemon 私有出口 | 2026-08-24 |
 | [#7557 · remove obsolete autopilot priority flag](https://github.com/multica-ai/multica/pull/7557) | 移除已废弃但仍被 CLI 静默接受的 autopilot priority 参数，让 CLI、API 与产品语义一致 | 2026-08-26 |
+| [#7753 · preserve Codex usage on cancelled turns](https://github.com/multica-ai/multica/pull/7753) | 保留 Codex 运行取消前已经产生的 token 用量，让中途停止的运行也能计入用量统计 | 2026-09-08 |
 | [#7756 · explicit Codex Standard speed](https://github.com/multica-ai/multica/pull/7756) | 区分“继承本地配置”、“明确 Standard”与“Fast”，支持本地默认 Fast 时主动切回 Standard | 2026-09-01 |
 | [#7760 · Pi session continuity](https://github.com/multica-ai/multica/pull/7760) | Pi/OMP 使用独立 JSONL session 时不再被 workdir 变化错误阻断恢复 | 2026-08-31 |
 | [#7790 · Codex thread handshake budget](https://github.com/multica-ai/multica/pull/7790) | 为 `thread/start` / `thread/resume` 设置独立的 60 秒默认预算，轻量 RPC 继续保持 30 秒 | 2026-08-31 |
 | [#7798 · require proven task ownership before GC mutation](https://github.com/multica-ai/multica/pull/7798) | GC 修改磁盘前必须先用 `.task_owner` 证明目录由 Multica 创建，普通目录不会再因为够旧或缺少完成信息就被递归删除。这项修复来自一次误删 20 GB 以上文件的真实事故，把“无法确认归属”改成保留目录，而不是猜测删除。 | 2026-09-01 |
+| [#7961 · record Antigravity token usage](https://github.com/multica-ai/multica/pull/7961) | 从 Antigravity 结构化输出记录本次运行的 token 用量，避免恢复会话时重复累计历史用量；完整回复已结束后出现特定网络尾部错误时，不再误报失败 | 2026-09-11 |
 | [#8200 · classify concurrent request rejections](https://github.com/multica-ai/multica/pull/8200) | 将带有 `concurrent request limit` 的 provider 403 正确识别为临时容量限制，不再误导用户重新登录或把正常会话判成上下文溢出。[维护者评价](https://github.com/multica-ai/multica/pull/8200#issuecomment-5598511185) | 2026-09-09 |
 | [#8236 · decline Codex reuse when home preparation fails](https://github.com/multica-ai/multica/pull/8236) | 旧 Codex 会话目录准备失败时，转入新环境准备流程，让局限于旧目录的故障不再直接终止任务；正常会话复用不变。[维护者评价](https://github.com/multica-ai/multica/pull/8236#issuecomment-5614768067) | 2026-09-10 |
+| [#8481 · report Grok prompt budget stops as failures](https://github.com/multica-ai/multica/pull/8481) | Grok 因 `max_tokens` 或 `max_turn_requests` 提前停止时，正确报告失败并保留输出、会话和用量，避免将未完成的运行误报为成功，也不将生成预算耗尽误判为上下文溢出 | 2026-09-16 |
 
 ### 维护者评价
 
