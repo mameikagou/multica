@@ -164,6 +164,11 @@ func CheckMinVersion(agentType, detectedVersion string) error {
 	if !ok {
 		return nil
 	}
+	// Magent has its own release numbering. Its 0.1.2 release was verified
+	// against Grok's authenticate, set_model and persisted session/load flow.
+	if agentType == "grok" && strings.HasPrefix(strings.TrimSpace(detectedVersion), "magent ") {
+		minRaw = "0.1.2"
+	}
 	min, err := parseSemver(minRaw)
 	if err != nil {
 		return fmt.Errorf("invalid minimum version %q for %s: %w", minRaw, agentType, err)

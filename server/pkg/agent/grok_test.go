@@ -889,6 +889,8 @@ func TestGrokSelectAuthMethod(t *testing.T) {
 	}{
 		{"none advertised", nil, false, "", true},
 		{"cached only", []string{"cached_token"}, false, "cached_token", false},
+		{"magent company credential", []string{"company.credential"}, false, "company.credential", false},
+		{"magent ignores unrelated xai key", []string{"company.credential"}, true, "company.credential", false},
 		{"api key preferred when present", []string{"cached_token", "xai.api_key"}, true, "xai.api_key", false},
 		{"api key ignored without env", []string{"cached_token", "xai.api_key"}, false, "cached_token", false},
 		{"api only requires env", []string{"xai.api_key"}, false, "", true},

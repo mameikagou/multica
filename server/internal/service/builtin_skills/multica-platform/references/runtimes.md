@@ -24,6 +24,13 @@ The chain is:
 
 ## CLI
 
+This local build can run Magent through the Grok Build ACP backend. Set
+`MULTICA_GROK_PATH` to the installed `magent` executable for that daemon only.
+Magent 0.1.2 or newer uses its own version floor and advertised
+`company.credential` authentication; it does not require xAI credentials.
+The runtime provider remains `grok`, while agent model IDs come from Magent's
+company model pool (for example `kimi-k3` and `deepseek-v4.1-flash`).
+
 ```bash
 multica runtime list --output json
 multica runtime usage <runtime-id> --output json

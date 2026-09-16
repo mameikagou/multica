@@ -532,8 +532,9 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 // `xai.api_key` consumes XAI_API_KEY from the environment; `cached_token`
 // reuses the credentials written by `grok login`.
 const (
-	grokAuthMethodAPIKey      = "xai.api_key"
-	grokAuthMethodCachedToken = "cached_token"
+	grokAuthMethodAPIKey            = "xai.api_key"
+	grokAuthMethodCachedToken       = "cached_token"
+	grokAuthMethodCompanyCredential = "company.credential"
 )
 
 // selectGrokAuthMethod chooses which advertised ACP auth method to use,
@@ -554,6 +555,11 @@ func selectGrokAuthMethod(methods []string, haveAPIKey bool) (string, error) {
 	}
 	if offered[grokAuthMethodCachedToken] {
 		return grokAuthMethodCachedToken, nil
+	}
+	// Magent retains Grok Build's ACP transport but resolves its company
+	// credentials inside the runtime. Only select the method it advertises.
+	if offered[grokAuthMethodCompanyCredential] {
+		return grokAuthMethodCompanyCredential, nil
 	}
 	if offered[grokAuthMethodAPIKey] {
 		return "", fmt.Errorf("Grok advertised only API-key authentication, but XAI_API_KEY is not set")
