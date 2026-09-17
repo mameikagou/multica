@@ -3196,6 +3196,18 @@ func TestShouldRetryWithFreshSession(t *testing.T) {
 			want:           false,
 		},
 		{
+			// Cursor can fail before emitting any session event when its provider
+			// connection times out. No returned ID is not a rejected resume.
+			name: "cursor connect timeout before session event keeps prior session",
+			result: agent.Result{
+				Status: "failed",
+				Error:  "cursor-agent exited with error: exit status 1 (result_seen=false, exit_code=1, scanner_error=false, event_count=0, invalid_event_count=0, last_event_type=none); actions completed before finalization may already have taken effect; cursor stderr: Error: [unavailable] connect ETIMEDOUT 192.0.2.1:443",
+			},
+			priorSessionID: "existing-cursor-session",
+			provider:       "cursor",
+			want:           false,
+		},
+		{
 			name:           "undetectable backend rate limit does not retry",
 			result:         agent.Result{Status: "failed", Error: "API Error: 429 rate limit exceeded"},
 			priorSessionID: "stale-id",
