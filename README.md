@@ -31,7 +31,7 @@
 
 ## 已被上游合并的贡献
 
-截至 2026-09-16，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 11 个 PR 已全部正式合并（日期按 GitHub UTC）：
+截至 2026-09-18，[`mameikagou`](https://github.com/mameikagou) 向 [`multica-ai/multica`](https://github.com/multica-ai/multica) 提交的以下 12 个 PR 已全部正式合并（日期按 GitHub UTC）：
 
 | PR | 上游获得的能力 | 合并日期 |
 | --- | --- | --- |
@@ -46,6 +46,7 @@
 | [#8200 · classify concurrent request rejections](https://github.com/multica-ai/multica/pull/8200) | 将带有 `concurrent request limit` 的 provider 403 正确识别为临时容量限制，不再误导用户重新登录或把正常会话判成上下文溢出。[维护者评价](https://github.com/multica-ai/multica/pull/8200#issuecomment-5598511185) | 2026-09-09 |
 | [#8236 · decline Codex reuse when home preparation fails](https://github.com/multica-ai/multica/pull/8236) | 旧 Codex 会话目录准备失败时，转入新环境准备流程，让局限于旧目录的故障不再直接终止任务；正常会话复用不变。[维护者评价](https://github.com/multica-ai/multica/pull/8236#issuecomment-5614768067) | 2026-09-10 |
 | [#8481 · report Grok prompt budget stops as failures](https://github.com/multica-ai/multica/pull/8481) | Grok 因 `max_tokens` 或 `max_turn_requests` 提前停止时，正确报告失败并保留输出、会话和用量，避免将未完成的运行误报为成功，也不将生成预算耗尽误判为上下文溢出 | 2026-09-16 |
+| [#8527 · preserve resumed Cursor sessions on connect timeouts](https://github.com/multica-ai/multica/pull/8527) | 将 Cursor 在恢复会话时、尚未产生任何事件便发生的 provider `ETIMEDOUT` 准确识别为网络故障，避免错误地冷启动新会话并丢失原有上下文；工具和 MCP 自身的同类超时仍保持原有分类 | 2026-09-18 |
 
 ### 维护者评价
 
