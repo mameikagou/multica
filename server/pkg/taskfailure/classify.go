@@ -434,10 +434,13 @@ var legacyEnvironmentPrepareWitnesses = []string{
 }
 
 // isCursorProviderNetworkError recognizes the captured Cursor provider error,
-// bare or in the adapter's process-failure wrapper. Do not match ETIMEDOUT
-// globally: a local tool or MCP connection timeout is not provider evidence.
+// bare or in the adapter's exit or prompt-write failure wrapper. A provider
+// timeout before stdin is drained also breaks the pending prompt write; that
+// secondary error must not hide the network evidence in stderr. Do not match
+// ETIMEDOUT globally: a local tool or MCP timeout is not provider evidence.
 func isCursorProviderNetworkError(lower string) bool {
-	if strings.HasPrefix(lower, "cursor-agent exited with error: ") {
+	if strings.HasPrefix(lower, "cursor-agent exited with error: ") ||
+		strings.HasPrefix(lower, "cursor-agent prompt write failed: ") {
 		_, stderr, ok := strings.Cut(lower, "; cursor stderr: ")
 		if !ok {
 			return false

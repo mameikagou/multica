@@ -288,7 +288,29 @@ func TestCursorExecuteConnectTimeoutIsResumeSafe(t *testing.T) {
 	}
 }
 
+func TestCursorExecuteConnectTimeoutBeforeReadingPromptIsResumeSafe(t *testing.T) {
+	t.Parallel()
+	// Exceed the pipe capacity and never read stdin: the timeout closes the
+	// pipe with a pending prompt write, deterministically exercising EPIPE.
+	script := "#!/bin/sh\nexec 0<&-\nprintf '%s\\n' 'Error: [unavailable] connect ETIMEDOUT 192.0.2.1:443' >&2\nexit 1\n"
+	result := executeFakeCursorWithPrompt(t, script, strings.Repeat("x", 2*1024*1024))
+	if result.Status != "failed" || result.SessionID != "" || result.ResumeRejected || result.ResumeRejectedTransient {
+		t.Fatalf("expected a failure without resume rejection before any event: %+v", result)
+	}
+	if !strings.HasPrefix(result.Error, "cursor-agent prompt write failed: ") {
+		t.Fatalf("fixture did not exercise the prompt-write failure: %s", result.Error)
+	}
+	if got := taskfailure.Classify(result.Error); got != taskfailure.ReasonAgentProviderNetwork {
+		t.Fatalf("prompt-write wrapper hid provider timeout: got %s: %s", got, result.Error)
+	}
+}
+
 func executeFakeCursor(t *testing.T, script string) Result {
+	t.Helper()
+	return executeFakeCursorWithPrompt(t, script, "hello")
+}
+
+func executeFakeCursorWithPrompt(t *testing.T, script, prompt string) Result {
 	t.Helper()
 
 	fakePath := filepath.Join(t.TempDir(), "cursor-agent")
@@ -298,7 +320,7 @@ func executeFakeCursor(t *testing.T, script string) Result {
 	if err != nil {
 		t.Fatalf("New(cursor): %v", err)
 	}
-	session, err := backend.Execute(t.Context(), "hello", ExecOptions{Timeout: 5 * time.Second})
+	session, err := backend.Execute(t.Context(), prompt, ExecOptions{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

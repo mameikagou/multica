@@ -3121,6 +3121,16 @@ func TestShouldRetryWithFreshSession(t *testing.T) {
 			want:           false,
 		},
 		{
+			name: "cursor connect timeout with broken prompt pipe keeps prior session",
+			result: agent.Result{
+				Status: "failed",
+				Error:  "cursor-agent prompt write failed: write |1: broken pipe (result_seen=false, exit_code=1, scanner_error=false, event_count=0, invalid_event_count=0, last_event_type=none); actions completed before finalization may already have taken effect; cursor stderr: Error: [unavailable] connect ETIMEDOUT 192.0.2.1:443",
+			},
+			priorSessionID: "existing-cursor-session",
+			provider:       "cursor",
+			want:           false,
+		},
+		{
 			name:           "undetectable backend rate limit does not retry",
 			result:         agent.Result{Status: "failed", Error: "API Error: 429 rate limit exceeded"},
 			priorSessionID: "stale-id",
