@@ -1077,6 +1077,25 @@ exit 1
 `
 }
 
+func fakeAgyHistoricalResultErrorScript(appDataDir, conversationID string) string {
+	return `#!/bin/sh
+log=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --log-file) log="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$log" ]; then
+  printf 'I0919 15:21:08.000000 1 common.go:156] CLI app data directory: ` + appDataDir + `\n' >> "$log"
+  printf 'I0919 15:21:08.000000 1 printmode.go:179] Print mode: conversation=` + conversationID + `, sending message\n' >> "$log"
+fi
+printf '%s\n' '{"event":"step_update","step_update":{"conversation_id":"` + conversationID + `","step_index":11,"state":"DONE","step_type":"agent_response","text_delta":"Current complete answer."}}'
+printf '%s\n' '{"event":"result","result":{"conversation_id":"` + conversationID + `","status":"ERROR","response":"Current complete answer.","error":"API error (attempt 1): UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server"}}'
+exit 1
+`
+}
+
 func fakeAgyCancelledStreamJSONScript() string {
 	return `#!/bin/sh
 printf '%s\n' '{"event":"init","conversation_id":"27a6d8f2-8523-46fc-8fc9-87e630cbe295","init":{"model":"gemini-3.8-flash-high"}}'
@@ -1231,6 +1250,72 @@ func TestAntigravityBackendKeepsNetworkFailureForNewerPartialResponse(t *testing
 	}
 	if result.Status != "failed" || result.Output != "Partial final answer." || !strings.Contains(result.Error, antigravityNetworkIssueError) {
 		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
+	}
+}
+
+func TestAntigravityBackendDiscardsOnlyHistoricalResultError(t *testing.T) {
+	const providerError = "API error (attempt 1): UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server"
+	const conversationID = "67a6d8f2-8523-46fc-8fc9-87e630cbe295"
+
+	for _, tt := range []struct {
+		name         string
+		resume       bool
+		currentError bool
+		malformed    bool
+		wantStatus   string
+	}{
+		{name: "historical error is discarded", resume: true, wantStatus: "completed"},
+		{name: "current turn error is preserved", resume: true, currentError: true, wantStatus: "failed"},
+		{name: "malformed transcript fails closed", resume: true, malformed: true, wantStatus: "failed"},
+		{name: "fresh invocation cannot discard transcript error", wantStatus: "failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			appDataDir := t.TempDir()
+			records := []string{
+				`{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"old prompt"}`,
+				`{"step_index":2,"source":"SYSTEM","type":"ERROR_MESSAGE","status":"DONE","error":"` + providerError + `"}`,
+				`{"step_index":10,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"current prompt"}`,
+			}
+			if tt.currentError {
+				records = append(records, `{"step_index":12,"source":"SYSTEM","type":"ERROR_MESSAGE","status":"DONE","error":"`+providerError+`"}`)
+			}
+			if tt.malformed {
+				records = append(records, `{"step_index":12,"source":"SYSTEM"`)
+			}
+			seedAntigravityTranscript(t, appDataDir, conversationID, records)
+
+			fakePath := filepath.Join(t.TempDir(), "agy")
+			writeTestExecutable(t, fakePath, []byte(fakeAgyHistoricalResultErrorScript(appDataDir, conversationID)))
+			backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+			if err != nil {
+				t.Fatalf("new antigravity backend: %v", err)
+			}
+			opts := ExecOptions{}
+			if tt.resume {
+				opts.ResumeSessionID = conversationID
+			}
+			session, err := backend.Execute(context.Background(), "prompt-ignored", opts)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			for range session.Messages {
+			}
+			result, ok := <-session.Result
+			if !ok {
+				t.Fatal("result channel closed without a value")
+			}
+			if result.Status != tt.wantStatus || result.Output != "Current complete answer." {
+				t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
+			}
+			if tt.wantStatus == "completed" && result.Error != "" {
+				t.Fatalf("stale error leaked into completed result: %q", result.Error)
+			}
+			if tt.wantStatus == "failed" && !strings.Contains(result.Error, providerError) {
+				t.Fatalf("current error was hidden: %q", result.Error)
+			}
+		})
 	}
 }
 

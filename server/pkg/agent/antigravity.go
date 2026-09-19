@@ -127,6 +127,60 @@ func antigravityCompletedDespiteTrailingNetworkError(providerError, response str
 		agentResponseDone
 }
 
+// antigravityResultErrorIsStale reports whether agy attached an error from an
+// earlier turn to the terminal result of a resumed conversation. agy's
+// transcript is append-only and gives every turn a USER_INPUT boundary, so an
+// exact matching error before the latest boundary — with no match after it —
+// proves the result error did not originate in this invocation. Requiring the
+// latest streamed DONE response to sit after that boundary prevents an old
+// transcript response from being mistaken for current completion.
+//
+// This is deliberately best-effort and fail-closed: any missing path, malformed
+// transcript, changed upstream schema, or ambiguous current-turn match keeps
+// the provider error instead of hiding it.
+func antigravityResultErrorIsStale(logPath, conversationID, resumedConversationID, providerError, response string, latestResponseStep int, latestResponseDone bool) bool {
+	providerError = strings.TrimSpace(providerError)
+	if providerError == "" || strings.TrimSpace(response) == "" || !latestResponseDone || latestResponseStep < 0 {
+		return false
+	}
+	if conversationID == "" || resumedConversationID == "" || !strings.EqualFold(conversationID, resumedConversationID) {
+		return false
+	}
+
+	seenUser := false
+	latestUserStep := -1
+	historicalMatch := false
+	currentTurnMatch := false
+	ok, fullyParsed := visitAntigravityTranscriptRecords(logPath, conversationID, func(rec antigravityTranscriptRecord) {
+		if rec.Type == "USER_INPUT" {
+			if seenUser && currentTurnMatch {
+				historicalMatch = true
+			}
+			seenUser = true
+			currentTurnMatch = false
+			latestUserStep = -1
+			if rec.StepIndex != nil {
+				latestUserStep = *rec.StepIndex
+			}
+			return
+		}
+		if strings.TrimSpace(rec.Error) != providerError {
+			return
+		}
+		if seenUser {
+			currentTurnMatch = true
+		} else {
+			historicalMatch = true
+		}
+	})
+	if !ok || !fullyParsed || !seenUser || latestUserStep < 0 || latestResponseStep <= latestUserStep {
+		return false
+	}
+	// A matching error persisted after the latest USER_INPUT belongs to this
+	// invocation, even when an identical historical error also exists.
+	return historicalMatch && !currentTurnMatch
+}
+
 var antigravitySelectedModelRe = regexp.MustCompile(
 	`Propagating selected model override to backend:\s*label="([^"\r\n]+)"`,
 )
@@ -344,6 +398,20 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 				// follow-up network operation. Preserve the finished answer instead
 				// of presenting that trailing transport error as a failed turn.
 				b.cfg.Logger.Warn("agy reported a trailing network error after a completed response", "err", streamResultError)
+			} else if antigravityResultErrorIsStale(
+				logPath,
+				sessionID,
+				opts.ResumeSessionID,
+				streamResultError,
+				streamResponse,
+				streamLatestAgentResponseStep,
+				streamLatestAgentResponseDone,
+			) {
+				// agy 1.2.x can copy an ERROR_MESSAGE from an earlier turn in the
+				// resumed conversation into this invocation's terminal result. The
+				// transcript boundary proves this exact error predates the current
+				// USER_INPUT, while the current turn has a later DONE response.
+				b.cfg.Logger.Warn("agy discarded stale historical error after a completed response", "err", streamResultError)
 			} else {
 				// Prefer the provider's structured error even when agy also exits
 				// non-zero; the process status alone discards the actionable cause.
@@ -560,10 +628,49 @@ var antigravityAppDataDirRe = regexp.MustCompile(`CLI app data directory:\s*(.+)
 // step — it is RawMessage so a null or non-string value is skipped rather than
 // failing the whole line.
 type antigravityTranscriptRecord struct {
-	Type    string          `json:"type"`
-	Source  string          `json:"source"`
-	Status  string          `json:"status"`
-	Content json.RawMessage `json:"content"`
+	StepIndex *int            `json:"step_index"`
+	Type      string          `json:"type"`
+	Source    string          `json:"source"`
+	Status    string          `json:"status"`
+	Content   json.RawMessage `json:"content"`
+	Error     string          `json:"error"`
+}
+
+func visitAntigravityTranscriptRecords(logPath, conversationID string, visit func(antigravityTranscriptRecord)) (bool, bool) {
+	if logPath == "" || conversationID == "" {
+		return false, false
+	}
+	appDataDir := readAntigravityAppDataDir(logPath)
+	if appDataDir == "" {
+		return false, false
+	}
+	transcriptPath := filepath.Join(
+		appDataDir, "brain", conversationID, ".system_generated", "logs", "transcript.jsonl",
+	)
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return false, false
+	}
+	defer f.Close()
+
+	fullyParsed := true
+	scanner := newAgentStreamScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var rec antigravityTranscriptRecord
+		if err := json.Unmarshal(line, &rec); err != nil {
+			fullyParsed = false
+			continue
+		}
+		visit(rec)
+	}
+	if scanner.Err() != nil {
+		return false, false
+	}
+	return true, fullyParsed
 }
 
 // readAntigravityTranscriptOutput recovers the assistant's text from agy's
@@ -588,51 +695,29 @@ type antigravityTranscriptRecord struct {
 // conversation id is unknown, the transcript is missing, or it holds no model
 // text for the current turn.
 func readAntigravityTranscriptOutput(logPath, conversationID string) string {
-	if logPath == "" || conversationID == "" {
-		return ""
-	}
-	appDataDir := readAntigravityAppDataDir(logPath)
-	if appDataDir == "" {
-		return ""
-	}
-	transcriptPath := filepath.Join(
-		appDataDir, "brain", conversationID, ".system_generated", "logs", "transcript.jsonl",
-	)
-	f, err := os.Open(transcriptPath)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
 	var parts []string
-	scanner := newAgentStreamScanner(f)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var rec antigravityTranscriptRecord
-		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
-		}
+	ok, _ := visitAntigravityTranscriptRecords(logPath, conversationID, func(rec antigravityTranscriptRecord) {
 		if rec.Type == "USER_INPUT" {
 			// New turn boundary: drop anything collected for prior turns so a
 			// resumed conversation yields only the current turn's reply.
 			parts = parts[:0]
-			continue
+			return
 		}
 		if rec.Type != "PLANNER_RESPONSE" || rec.Source != "MODEL" || rec.Status != "DONE" {
-			continue
+			return
 		}
 		var text string
 		// Content is JSON null for tool-only steps; unmarshal leaves text "".
 		// A non-string value (object) errors and is skipped.
 		if err := json.Unmarshal(rec.Content, &text); err != nil {
-			continue
+			return
 		}
 		if strings.TrimSpace(text) != "" {
 			parts = append(parts, text)
 		}
+	})
+	if !ok {
+		return ""
 	}
 	return strings.Join(parts, "\n\n")
 }
