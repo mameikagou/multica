@@ -158,9 +158,10 @@ Source entry points: `server/internal/daemon/prompt.go`
   fallback. Preserve dynamic turn data and emit continuity notices only once.
 - Keep writer exclusion, session reachability, rollout persistence, cancellation
   and retry bounds intact. They protect different failure boundaries.
-- The local all-error execution retry remains limited to one daemon-level retry;
-  cancellation must not launch another execution. Provider-internal retries are
-  separate and must not be described as covered by that single shared budget.
+- Do not restore the generic daemon-level all-error execution retry: it was
+  deliberately removed. Keep the bounded fresh-session retry for eligible
+  resume failures; cancellation must not launch another execution. Platform
+  auto-retries and provider-internal retries remain separate policies.
 - Do not restore `native_workdir`: the user explicitly excluded it from migration.
 - Existing prompt/helper tests establish prompt selection; a protocol fixture
   capturing `turn/start.input` is stronger wiring evidence. Real continuity

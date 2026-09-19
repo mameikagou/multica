@@ -1262,12 +1262,20 @@ func TestAntigravityBackendDiscardsOnlyHistoricalResultError(t *testing.T) {
 		resume       bool
 		currentError bool
 		malformed    bool
+		resultStatus string
+		logLine      string
+		wantError    string
 		wantStatus   string
 	}{
 		{name: "historical error is discarded", resume: true, wantStatus: "completed"},
 		{name: "current turn error is preserved", resume: true, currentError: true, wantStatus: "failed"},
 		{name: "malformed transcript fails closed", resume: true, malformed: true, wantStatus: "failed"},
 		{name: "fresh invocation cannot discard transcript error", wantStatus: "failed"},
+		{name: "current print timeout wins over stale error", resume: true, logLine: "Print mode: timed out after 100 polls (printed=3)", wantStatus: "timeout", wantError: "agy --print-timeout elapsed"},
+		{name: "current provider failure wins over stale error", resume: true, logLine: "agent executor error: current invocation quota exhausted", wantStatus: "failed", wantError: "agy provider error: current invocation quota exhausted"},
+		{name: "cancellation is not stale", resume: true, resultStatus: "CANCELLED", wantStatus: "cancelled"},
+		{name: "abort is not stale", resume: true, resultStatus: "ABORTED", wantStatus: "aborted"},
+		{name: "timeout is not stale", resume: true, resultStatus: "TIMEOUT", wantStatus: "timeout"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -1287,7 +1295,14 @@ func TestAntigravityBackendDiscardsOnlyHistoricalResultError(t *testing.T) {
 			seedAntigravityTranscript(t, appDataDir, conversationID, records)
 
 			fakePath := filepath.Join(t.TempDir(), "agy")
-			writeTestExecutable(t, fakePath, []byte(fakeAgyHistoricalResultErrorScript(appDataDir, conversationID)))
+			script := fakeAgyHistoricalResultErrorScript(appDataDir, conversationID)
+			if tt.logLine != "" {
+				script = strings.Replace(script, "\nfi\n", "\n  printf '%s\\n' '"+tt.logLine+"' >> \"$log\"\nfi\n", 1)
+			}
+			if tt.resultStatus != "" {
+				script = strings.Replace(script, `"status":"ERROR"`, `"status":"`+tt.resultStatus+`"`, 1)
+			}
+			writeTestExecutable(t, fakePath, []byte(script))
 			backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
 			if err != nil {
 				t.Fatalf("new antigravity backend: %v", err)
@@ -1312,7 +1327,11 @@ func TestAntigravityBackendDiscardsOnlyHistoricalResultError(t *testing.T) {
 			if tt.wantStatus == "completed" && result.Error != "" {
 				t.Fatalf("stale error leaked into completed result: %q", result.Error)
 			}
-			if tt.wantStatus == "failed" && !strings.Contains(result.Error, providerError) {
+			wantError := tt.wantError
+			if wantError == "" {
+				wantError = providerError
+			}
+			if tt.wantStatus != "completed" && !strings.Contains(result.Error, wantError) {
 				t.Fatalf("current error was hidden: %q", result.Error)
 			}
 		})

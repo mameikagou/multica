@@ -393,12 +393,14 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 			finalStatus = "aborted"
 			finalError = "execution cancelled"
 		} else if status := antigravityResultStatus(streamResultStatus); finalStatus == "completed" && status != "completed" {
-			if antigravityCompletedDespiteTrailingNetworkError(streamResultError, streamResponse, streamLatestAgentResponseDone) {
+			// Historical/trailing errors may explain an ERROR result, never an
+			// explicit cancellation, abort or timeout from this invocation.
+			if status == "failed" && antigravityCompletedDespiteTrailingNetworkError(streamResultError, streamResponse, streamLatestAgentResponseDone) {
 				// agy can emit a complete DONE response and only then fail a
 				// follow-up network operation. Preserve the finished answer instead
 				// of presenting that trailing transport error as a failed turn.
 				b.cfg.Logger.Warn("agy reported a trailing network error after a completed response", "err", streamResultError)
-			} else if antigravityResultErrorIsStale(
+			} else if status == "failed" && antigravityResultErrorIsStale(
 				logPath,
 				sessionID,
 				opts.ResumeSessionID,
@@ -424,7 +426,11 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 		} else if waitErr != nil && finalStatus == "completed" {
 			finalStatus = "failed"
 			finalError = fmt.Sprintf("agy exited with error: %v", waitErr)
-		} else if finalStatus == "completed" && antigravityPrintTimedOut(logPath) {
+		}
+		// Discarding a stale result error does not prove the current run
+		// succeeded. Check its own log independently, even when the result's
+		// error (and accompanying non-zero exit) was intentionally ignored.
+		if finalStatus == "completed" && antigravityPrintTimedOut(logPath) {
 			// agy hit its own --print-timeout: it printed "Error: timed out
 			// waiting for response" to stdout and EXITED 0, so runCtx never
 			// tripped and waitErr is nil — the checks above leave the turn as
