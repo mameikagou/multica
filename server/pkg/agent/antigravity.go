@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -121,64 +123,132 @@ func antigravityResultStatus(status string) string {
 	}
 }
 
-func antigravityCompletedDespiteTrailingNetworkError(providerError, response string, agentResponseDone bool) bool {
-	return strings.EqualFold(strings.TrimSpace(providerError), antigravityNetworkIssueError) &&
-		strings.TrimSpace(response) != "" &&
-		agentResponseDone
+// Wrappers with isolated mount namespaces must supply the host-visible store
+// in the agent's custom environment. Never search another account's history.
+const antigravityDataDirEnv = "MULTICA_ANTIGRAVITY_DATA_DIR"
+
+func antigravityDataDir(cfg Config) string {
+	if dir := cfg.Env[antigravityDataDirEnv]; dir != "" {
+		if filepath.IsAbs(dir) {
+			return filepath.Clean(dir)
+		}
+		return ""
+	}
+	if !cfg.BuiltinRuntime && filepath.Base(cfg.ExecutablePath) != "agy" {
+		return ""
+	}
+	home := cfg.Env["HOME"]
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli")
 }
 
-// antigravityResultErrorIsStale reports whether agy attached an error from an
-// earlier turn to the terminal result of a resumed conversation. agy's
-// transcript is append-only and gives every turn a USER_INPUT boundary, so an
-// exact matching error before the latest boundary — with no match after it —
-// proves the result error did not originate in this invocation. Requiring the
-// latest streamed DONE response to sit after that boundary prevents an old
-// transcript response from being mistaken for current completion.
-//
-// This is deliberately best-effort and fail-closed: any missing path, malformed
-// transcript, changed upstream schema, or ambiguous current-turn match keeps
-// the provider error instead of hiding it.
-func antigravityResultErrorIsStale(logPath, conversationID, resumedConversationID, providerError, response string, latestResponseStep int, latestResponseDone bool) bool {
-	providerError = strings.TrimSpace(providerError)
-	if providerError == "" || strings.TrimSpace(response) == "" || !latestResponseDone || latestResponseStep < 0 {
-		return false
-	}
-	if conversationID == "" || resumedConversationID == "" || !strings.EqualFold(conversationID, resumedConversationID) {
-		return false
-	}
+type antigravityTurnBoundary struct {
+	path, sessionID string
+	info            os.FileInfo
+	size            int64
+	digest          string
+	maxStep         int
+	hadError        bool
+}
 
-	seenUser := false
-	latestUserStep := -1
-	historicalMatch := false
-	currentTurnMatch := false
-	ok, fullyParsed := visitAntigravityTranscriptRecords(logPath, conversationID, func(rec antigravityTranscriptRecord) {
-		if rec.Type == "USER_INPUT" {
-			if seenUser && currentTurnMatch {
-				historicalMatch = true
-			}
-			seenUser = true
-			currentTurnMatch = false
-			latestUserStep = -1
-			if rec.StepIndex != nil {
-				latestUserStep = *rec.StepIndex
-			}
-			return
+// Capture BEFORE starting agy. The prefix digest prevents truncation or an
+// in-place rewrite from turning old rows into apparently new evidence.
+func captureAntigravityTurn(dir, sessionID string) *antigravityTurnBoundary {
+	if dir == "" || sessionID == "" || filepath.Base(sessionID) != sessionID || strings.ContainsAny(sessionID, `/\\`) || sessionID == "." || sessionID == ".." {
+		return nil
+	}
+	path := filepath.Join(dir, "brain", sessionID, ".system_generated", "logs", "transcript.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], info.Size()-1); err != nil || last[0] != '\n' {
+		return nil
+	}
+	b := &antigravityTurnBoundary{path: path, sessionID: sessionID, info: info, size: info.Size(), maxStep: -1}
+	hash := sha256.New()
+	scanner := newAgentStreamScanner(io.TeeReader(io.NewSectionReader(f, 0, b.size), hash))
+	for scanner.Scan() {
+		var rec antigravityTranscriptRecord
+		if json.Unmarshal(scanner.Bytes(), &rec) != nil || rec.StepIndex == nil || rec.Type == "" {
+			return nil
 		}
-		if strings.TrimSpace(rec.Error) != providerError {
-			return
+		if *rec.StepIndex > b.maxStep {
+			b.maxStep = *rec.StepIndex
 		}
-		if seenUser {
-			currentTurnMatch = true
-		} else {
-			historicalMatch = true
-		}
-	})
-	if !ok || !fullyParsed || !seenUser || latestUserStep < 0 || latestResponseStep <= latestUserStep {
+		b.hadError = b.hadError || rec.Type == "ERROR_MESSAGE" || strings.TrimSpace(rec.Error) != ""
+	}
+	if scanner.Err() != nil {
+		return nil
+	}
+	b.digest = string(hash.Sum(nil))
+	return b
+}
+
+// A completed, error-free invocation may override agy's conversation-wide
+// error field. Error wording is NOT identity: prefixes, reset timers and new
+// error types need no allowlist. Every new error still vetoes recovery.
+func (b *antigravityTurnBoundary) completed(sessionID, response string, responseStep int, responseDone bool) bool {
+	if b == nil || !b.hadError || b.sessionID != sessionID || !responseDone || strings.TrimSpace(response) == "" || responseStep <= b.maxStep {
 		return false
 	}
-	// A matching error persisted after the latest USER_INPUT belongs to this
-	// invocation, even when an identical historical error also exists.
-	return historicalMatch && !currentTurnMatch
+	f, err := os.Open(b.path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !os.SameFile(b.info, info) || info.Size() <= b.size {
+		return false
+	}
+	hash := sha256.New()
+	if _, err := io.CopyN(hash, f, b.size); err != nil || string(hash.Sum(nil)) != b.digest {
+		return false
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], info.Size()-1); err != nil || last[0] != '\n' {
+		return false
+	}
+	users, lastStep := 0, b.maxStep
+	confirmed := false
+	scanner := newAgentStreamScanner(io.NewSectionReader(f, b.size, info.Size()-b.size))
+	for scanner.Scan() {
+		var rec antigravityTranscriptRecord
+		if json.Unmarshal(scanner.Bytes(), &rec) != nil || rec.StepIndex == nil || rec.Type == "" || *rec.StepIndex <= b.maxStep || *rec.StepIndex < lastStep {
+			return false
+		}
+		lastStep = *rec.StepIndex
+		if rec.Type == "USER_INPUT" {
+			users++
+		}
+		if users != 1 || rec.Type == "ERROR_MESSAGE" || strings.TrimSpace(rec.Error) != "" {
+			return false
+		}
+		switch strings.ToUpper(rec.Status) {
+		case "ERROR", "FAILED", "CANCELLED", "CANCELED", "ABORTED", "TIMEOUT", "TIMED_OUT":
+			return false
+		}
+		if rec.Source == "MODEL" && *rec.StepIndex > responseStep {
+			return false
+		}
+		if *rec.StepIndex == responseStep && rec.Type == "PLANNER_RESPONSE" && rec.Source == "MODEL" && rec.Status == "DONE" {
+			var text string
+			confirmed = json.Unmarshal(rec.Content, &text) == nil && strings.TrimSpace(text) == strings.TrimSpace(response)
+		}
+	}
+	end, err := f.Stat()
+	return scanner.Err() == nil && err == nil && end.Size() == info.Size() && end.ModTime().Equal(info.ModTime()) && users == 1 && confirmed
 }
 
 var antigravitySelectedModelRe = regexp.MustCompile(
@@ -266,6 +336,10 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 	}
 	stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[agy:stderr] "), agentStderrTailBytes)
 	cmd.Stderr = stderrBuf
+	turnBoundary := captureAntigravityTurn(antigravityDataDir(b.cfg), opts.ResumeSessionID)
+	if opts.ResumeSessionID != "" && turnBoundary == nil {
+		b.cfg.Logger.Warn("agy pre-launch turn boundary unavailable; terminal errors will be preserved")
+	}
 
 	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
 		cancel()
@@ -300,6 +374,8 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 		streamStepUsage := make(map[int]TokenUsage)
 		streamLatestAgentResponseStep := -1
 		streamLatestAgentResponseDone := false
+		streamCurrentError := false
+		streamMalformed := false
 		finalStatus := "completed"
 		var finalError string
 
@@ -312,12 +388,18 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 			var event antigravityStreamEvent
 			if err := json.Unmarshal([]byte(line), &event); err == nil && event.Event != "" {
 				switch event.Event {
+				case "error":
+					streamCurrentError = true
 				case "init":
 					streamSessionID = event.ConversationID
 					streamModel = event.Init.Model
 				case "step_update":
 					if event.StepUpdate == nil {
+						streamMalformed = true
 						continue
+					}
+					if strings.EqualFold(event.StepUpdate.StepType, "error_message") || strings.EqualFold(event.StepUpdate.State, "error") || strings.EqualFold(event.StepUpdate.State, "failed") {
+						streamCurrentError = true
 					}
 					if event.StepUpdate.ConversationID != "" {
 						streamSessionID = event.StepUpdate.ConversationID
@@ -355,6 +437,7 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 				}
 				continue
 			}
+			streamMalformed = true
 			// The daemon concatenates streamed MessageText with no separator
 			// (pendingText.WriteString), so the streamed text must carry the
 			// line breaks itself. Mirror output's construction — prefix the
@@ -395,25 +478,10 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 		} else if status := antigravityResultStatus(streamResultStatus); finalStatus == "completed" && status != "completed" {
 			// Historical/trailing errors may explain an ERROR result, never an
 			// explicit cancellation, abort or timeout from this invocation.
-			if status == "failed" && antigravityCompletedDespiteTrailingNetworkError(streamResultError, streamResponse, streamLatestAgentResponseDone) {
-				// agy can emit a complete DONE response and only then fail a
-				// follow-up network operation. Preserve the finished answer instead
-				// of presenting that trailing transport error as a failed turn.
-				b.cfg.Logger.Warn("agy reported a trailing network error after a completed response", "err", streamResultError)
-			} else if status == "failed" && antigravityResultErrorIsStale(
-				logPath,
-				sessionID,
-				opts.ResumeSessionID,
-				streamResultError,
-				streamResponse,
-				streamLatestAgentResponseStep,
-				streamLatestAgentResponseDone,
-			) {
-				// agy 1.2.x can copy an ERROR_MESSAGE from an earlier turn in the
-				// resumed conversation into this invocation's terminal result. The
-				// transcript boundary proves this exact error predates the current
-				// USER_INPUT, while the current turn has a later DONE response.
-				b.cfg.Logger.Warn("agy discarded stale historical error after a completed response", "err", streamResultError)
+			if status == "failed" && !streamCurrentError && !streamMalformed && scanner.Err() == nil &&
+				!antigravityCurrentStderrError(stderrBuf.Tail()) &&
+				turnBoundary.completed(sessionID, streamResponse, streamLatestAgentResponseStep, streamLatestAgentResponseDone) {
+				b.cfg.Logger.Warn("agy ignored conversation-wide error after verifying this invocation completed without errors", "response_step", streamLatestAgentResponseStep)
 			} else {
 				// Prefer the provider's structured error even when agy also exits
 				// non-zero; the process status alone discards the actionable cause.
@@ -528,6 +596,16 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 	}()
 
 	return &Session{Messages: msgCh, Result: resCh}, nil
+}
+
+func antigravityCurrentStderrError(stderr string) bool {
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "AGY_ERROR:") || strings.HasPrefix(strings.ToLower(line), "error:") {
+			return true
+		}
+	}
+	return false
 }
 
 // antigravityAuthTimeoutRetrySafe identifies the one agy failure that can be

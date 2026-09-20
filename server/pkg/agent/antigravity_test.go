@@ -1153,7 +1153,7 @@ func TestAntigravityBackendStreamJSONCapturesUsage(t *testing.T) {
 	}
 }
 
-func TestAntigravityBackendIgnoresTrailingNetworkErrorAfterDoneResponse(t *testing.T) {
+func TestAntigravityBackendRequiresTurnEvidenceForTrailingNetworkError(t *testing.T) {
 	t.Parallel()
 
 	fakePath := filepath.Join(t.TempDir(), "agy")
@@ -1173,12 +1173,12 @@ func TestAntigravityBackendIgnoresTrailingNetworkErrorAfterDoneResponse(t *testi
 	if !ok {
 		t.Fatal("result channel closed without a value")
 	}
-	if result.Status != "completed" || result.Output != "Complete answer." || result.Error != "" {
+	if result.Status != "failed" || result.Output != "Complete answer." || !strings.Contains(result.Error, antigravityNetworkIssueError) {
 		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
 	}
 }
 
-func TestAntigravityBackendIgnoresStaleActiveStepAfterDoneResponse(t *testing.T) {
+func TestAntigravityBackendRequiresTurnEvidenceDespiteDoneResponse(t *testing.T) {
 	t.Parallel()
 
 	fakePath := filepath.Join(t.TempDir(), "agy")
@@ -1198,7 +1198,7 @@ func TestAntigravityBackendIgnoresStaleActiveStepAfterDoneResponse(t *testing.T)
 	if !ok {
 		t.Fatal("result channel closed without a value")
 	}
-	if result.Status != "completed" || result.Output != "Complete answer after cancelling the background task." || result.Error != "" {
+	if result.Status != "failed" || result.Output != "Complete answer after cancelling the background task." || !strings.Contains(result.Error, antigravityNetworkIssueError) {
 		t.Fatalf("result = status %q output %q error %q", result.Status, result.Output, result.Error)
 	}
 }
@@ -1266,8 +1266,20 @@ func TestAntigravityBackendDiscardsOnlyHistoricalResultError(t *testing.T) {
 		logLine      string
 		wantError    string
 		wantStatus   string
+		isolated     bool
+		noAppend     bool
+		newError     string
+		resultError  string
+		stderr       string
 	}{
 		{name: "historical error is discarded", resume: true, wantStatus: "completed"},
+		{name: "account B namespace uses explicit host store", resume: true, isolated: true, wantStatus: "completed"},
+		{name: "account A changed quota wording", resume: true, resultError: "Individual quota reached. Resets in 67h35m32s.", wantStatus: "completed"},
+		{name: "quota wording and countdown are not identity", resume: true, isolated: true, resultError: "Individual quota reached. Resets in 67h35m32s.", wantStatus: "completed"},
+		{name: "old completed turn cannot prove this invocation", resume: true, noAppend: true, wantStatus: "failed"},
+		{name: "unknown new error is preserved", resume: true, newError: "a never-before-seen vendor failure", wantStatus: "failed"},
+		{name: "account B new error is preserved", resume: true, isolated: true, newError: "a never-before-seen vendor failure", wantStatus: "failed"},
+		{name: "current stderr failure is preserved", resume: true, stderr: "AGY_ERROR: new invocation failed", wantStatus: "failed"},
 		{name: "current turn error is preserved", resume: true, currentError: true, wantStatus: "failed"},
 		{name: "malformed transcript fails closed", resume: true, malformed: true, wantStatus: "failed"},
 		{name: "fresh invocation cannot discard transcript error", wantStatus: "failed"},
@@ -1280,22 +1292,48 @@ func TestAntigravityBackendDiscardsOnlyHistoricalResultError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			appDataDir := t.TempDir()
+			homeDir := t.TempDir()
+			appDataDir := filepath.Join(homeDir, ".gemini", "antigravity-cli")
 			records := []string{
 				`{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"old prompt"}`,
 				`{"step_index":2,"source":"SYSTEM","type":"ERROR_MESSAGE","status":"DONE","error":"` + providerError + `"}`,
-				`{"step_index":10,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"current prompt"}`,
-			}
-			if tt.currentError {
-				records = append(records, `{"step_index":12,"source":"SYSTEM","type":"ERROR_MESSAGE","status":"DONE","error":"`+providerError+`"}`)
-			}
-			if tt.malformed {
-				records = append(records, `{"step_index":12,"source":"SYSTEM"`)
 			}
 			seedAntigravityTranscript(t, appDataDir, conversationID, records)
+			currentRecords := []string{
+				`{"step_index":10,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"current prompt"}`,
+				`{"step_index":11,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Current complete answer."}`,
+			}
+			if tt.currentError {
+				currentRecords = append(currentRecords, `{"step_index":12,"source":"SYSTEM","type":"ERROR_MESSAGE","status":"DONE","error":"`+providerError+`"}`)
+			}
+			if tt.newError != "" {
+				currentRecords = append(currentRecords, `{"step_index":12,"type":"ERROR_MESSAGE","error":"`+tt.newError+`"}`)
+			}
+			if tt.malformed {
+				currentRecords = append(currentRecords, `{"step_index":12,"source":"SYSTEM"`)
+			}
 
 			fakePath := filepath.Join(t.TempDir(), "agy")
-			script := fakeAgyHistoricalResultErrorScript(appDataDir, conversationID)
+			logDir := appDataDir
+			env := map[string]string{"HOME": homeDir}
+			if tt.isolated {
+				fakePath = filepath.Join(t.TempDir(), "agy-account-b")
+				env["HOME"] = t.TempDir()
+				logDir = filepath.Join(env["HOME"], ".gemini", "antigravity-cli") // NOT its host store.
+				env["MULTICA_ANTIGRAVITY_DATA_DIR"] = appDataDir
+			}
+			script := fakeAgyHistoricalResultErrorScript(logDir, conversationID)
+			if !tt.noAppend {
+				path := filepath.Join(appDataDir, "brain", conversationID, ".system_generated", "logs", "transcript.jsonl")
+				appendScript := fmt.Sprintf("printf '%%s\\n' '%s' >> %q\n", strings.Join(currentRecords, "' '"), path)
+				script = strings.Replace(script, "#!/bin/sh\n", "#!/bin/sh\n"+appendScript, 1)
+			}
+			if tt.resultError != "" {
+				script = strings.ReplaceAll(script, providerError, tt.resultError)
+			}
+			if tt.stderr != "" {
+				script = strings.Replace(script, "exit 1", "printf '%s\\n' '"+tt.stderr+"' >&2\nexit 1", 1)
+			}
 			if tt.logLine != "" {
 				script = strings.Replace(script, "\nfi\n", "\n  printf '%s\\n' '"+tt.logLine+"' >> \"$log\"\nfi\n", 1)
 			}
@@ -1303,7 +1341,7 @@ func TestAntigravityBackendDiscardsOnlyHistoricalResultError(t *testing.T) {
 				script = strings.Replace(script, `"status":"ERROR"`, `"status":"`+tt.resultStatus+`"`, 1)
 			}
 			writeTestExecutable(t, fakePath, []byte(script))
-			backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+			backend, err := New("antigravity", Config{ExecutablePath: fakePath, Env: env, Logger: quietAntigravityLogger()})
 			if err != nil {
 				t.Fatalf("new antigravity backend: %v", err)
 			}
@@ -1333,6 +1371,54 @@ func TestAntigravityBackendDiscardsOnlyHistoricalResultError(t *testing.T) {
 			}
 			if tt.wantStatus != "completed" && !strings.Contains(result.Error, wantError) {
 				t.Fatalf("current error was hidden: %q", result.Error)
+			}
+		})
+	}
+}
+
+func TestAntigravityTurnBoundaryRejectsAmbiguousHistory(t *testing.T) {
+	const id = "67a6d8f2-8523-46fc-8fc9-87e630cbe295"
+	const history = "{\"step_index\":1,\"type\":\"USER_INPUT\",\"content\":\"old\"}\n{\"step_index\":2,\"type\":\"ERROR_MESSAGE\",\"error\":\"old failure\"}\n"
+	const current = "{\"step_index\":10,\"type\":\"USER_INPUT\"}\n{\"step_index\":11,\"type\":\"PLANNER_RESPONSE\",\"source\":\"MODEL\",\"status\":\"DONE\",\"content\":\"answer\"}\n"
+	for _, mode := range []string{"completed", "replaced", "rewritten", "truncated", "second user", "no user", "replayed indices", "no persisted answer", "partial row", "different session", "new unknown error"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			seedAntigravityTranscript(t, dir, id, []string{strings.TrimSuffix(history, "\n")})
+			boundary := captureAntigravityTurn(dir, id)
+			if boundary == nil {
+				t.Fatal("baseline missing")
+			}
+			body, sessionID := history+current, id
+			switch mode {
+			case "replaced":
+				if err := os.Rename(boundary.path, boundary.path+".old"); err != nil {
+					t.Fatal(err)
+				}
+			case "rewritten":
+				body = strings.Replace(body, `"old"`, `"new"`, 1)
+			case "truncated":
+				body = current
+			case "second user":
+				body += "{\"step_index\":12,\"type\":\"USER_INPUT\"}\n"
+			case "no user":
+				body = history + strings.SplitAfterN(current, "\n", 2)[1]
+			case "replayed indices":
+				body = history + strings.ReplaceAll(current, "10", "1")
+			case "no persisted answer":
+				body = history + strings.SplitAfterN(current, "\n", 2)[0]
+			case "partial row":
+				body += "{"
+			case "different session":
+				sessionID = "another-session"
+			case "new unknown error":
+				body += "{\"step_index\":12,\"type\":\"ERROR_MESSAGE\",\"error\":\"brand new error category\"}\n"
+			}
+			if err := os.WriteFile(boundary.path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := boundary.completed(sessionID, "answer", 11, true); got != (mode == "completed") {
+				t.Fatalf("completed=%v for %s", got, mode)
 			}
 		})
 	}

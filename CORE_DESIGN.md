@@ -153,6 +153,20 @@ Source entry points: `server/internal/daemon/prompt.go`
 
 ## Upgrade acceptance
 
+Antigravity terminal errors are reconciled against a pre-launch transcript
+boundary, not error text. Capture the exact account's file identity, prefix
+digest and last step before invoking the CLI. Recovery requires exactly one
+new user turn, its persisted completed response matching the stream, and no
+new error. Missing or changed files, ambiguous turns, current stderr/stream
+errors, cancellation and timeouts must remain failures. No error-message or
+quota-countdown allowlist may replace this evidence.
+
+The built-in Antigravity runtime uses its HOME-based store. An isolated custom
+runtime must set `MULTICA_ANTIGRAVITY_DATA_DIR` in the agent's custom environment
+to its host-visible Antigravity data directory (the directory containing
+`brain/`). A path printed inside a mount namespace is not a host path. Never
+search or merge other accounts' transcripts to repair a missing boundary.
+
 - Compare behavior against this contract, not just commit hashes or titles.
 - Cover confirmed resume, cold start, rejected resume and internal fresh
   fallback. Preserve dynamic turn data and emit continuity notices only once.
