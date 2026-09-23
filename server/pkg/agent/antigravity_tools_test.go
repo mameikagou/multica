@@ -93,10 +93,50 @@ func TestAntigravityToolInputNormalization(t *testing.T) {
 		name, tool  string
 		input, want map[string]any
 	}{
-		{"shell command", "run_command", map[string]any{"CommandLine": "echo hello", "Cwd": "/workspace"}, map[string]any{"CommandLine": "echo hello", "Cwd": "/workspace", "command": "echo hello"}},
-		{"file read", "view_file", map[string]any{"AbsolutePath": "/workspace/a.go"}, map[string]any{"AbsolutePath": "/workspace/a.go", "file_path": "/workspace/a.go"}},
-		{"file write", "write_to_file", map[string]any{"TargetFile": "/workspace/a.go"}, map[string]any{"TargetFile": "/workspace/a.go", "file_path": "/workspace/a.go"}},
-		{"file edit", "replace_file_content", map[string]any{"TargetFile": "/workspace/a.go"}, map[string]any{"TargetFile": "/workspace/a.go", "file_path": "/workspace/a.go"}},
+		{"shell command", "run_command", map[string]any{"CommandLine": "echo hello", "Cwd": "/workspace"}, map[string]any{"Cwd": "/workspace", "command": "echo hello"}},
+		{"file read", "view_file", map[string]any{"AbsolutePath": "/workspace/a.go"}, map[string]any{"file_path": "/workspace/a.go"}},
+		{
+			name: "file write", tool: "write_to_file",
+			input: map[string]any{"TargetFile": "/workspace/a.go", "CodeContent": "package main\n"},
+			want:  map[string]any{"file_path": "/workspace/a.go", "content": "package main\n"},
+		},
+		{
+			name: "file edit", tool: "replace_file_content",
+			input: map[string]any{"TargetFile": "/workspace/a.go", "TargetContent": "before", "ReplacementContent": "after"},
+			want:  map[string]any{"file_path": "/workspace/a.go", "old_string": "before", "new_string": "after"},
+		},
+		{
+			name: "empty file", tool: "write_to_file",
+			input: map[string]any{"TargetFile": "/workspace/empty.go", "CodeContent": ""},
+			want:  map[string]any{"file_path": "/workspace/empty.go", "content": ""},
+		},
+		{
+			name: "delete text", tool: "replace_file_content",
+			input: map[string]any{"TargetFile": "/workspace/a.go", "TargetContent": "before", "ReplacementContent": ""},
+			want:  map[string]any{"file_path": "/workspace/a.go", "old_string": "before", "new_string": ""},
+		},
+		{
+			name: "insert text", tool: "replace_file_content",
+			input: map[string]any{"TargetContent": "", "ReplacementContent": "after"},
+			want:  map[string]any{"old_string": "", "new_string": "after"},
+		},
+		{
+			name: "content collisions retained", tool: "custom",
+			input: map[string]any{"CodeContent": "other", "content": "", "TargetContent": "before", "old_string": nil, "ReplacementContent": "after", "new_string": false},
+			want:  map[string]any{"CodeContent": "other", "content": "", "TargetContent": "before", "old_string": nil, "ReplacementContent": "after", "new_string": false},
+		},
+		{
+			name: "invalid content retained", tool: "custom",
+			input: map[string]any{"CodeContent": 123, "TargetContent": nil, "ReplacementContent": false},
+			want:  map[string]any{"CodeContent": 123, "TargetContent": nil, "ReplacementContent": false},
+		},
+		{
+			name: "replacement chunks remain opaque", tool: "multi_replace_file_content",
+			input: map[string]any{"TargetFile": "/workspace/a.go", "ReplacementChunks": []any{map[string]any{"TargetContent": "before", "ReplacementContent": ""}}},
+			want:  map[string]any{"file_path": "/workspace/a.go", "ReplacementChunks": []any{map[string]any{"TargetContent": "before", "ReplacementContent": ""}}},
+		},
+		{"empty command retained", "run_command", map[string]any{"CommandLine": ""}, map[string]any{"CommandLine": ""}},
+		{"empty path retained", "view_file", map[string]any{"AbsolutePath": ""}, map[string]any{"AbsolutePath": ""}},
 		{"canonical fields win", "run_command", map[string]any{"CommandLine": "other", "command": "original", "AbsolutePath": "other", "file_path": "original"}, map[string]any{"CommandLine": "other", "command": "original", "AbsolutePath": "other", "file_path": "original"}},
 		{"explicit canonical null retained", "run_command", map[string]any{"CommandLine": "other", "command": nil}, map[string]any{"CommandLine": "other", "command": nil}},
 		{"invalid aliases ignored", "custom", map[string]any{"CommandLine": 123, "AbsolutePath": nil, "TargetFile": ""}, map[string]any{"CommandLine": 123, "AbsolutePath": nil, "TargetFile": ""}},
@@ -125,6 +165,9 @@ func TestAntigravityToolInputNormalization(t *testing.T) {
 				}
 				if string(before) != string(after) {
 					t.Fatalf("provider parameters mutated: %s -> %s", before, after)
+				}
+				if got := antigravityToolInput(messages[0].Input); !reflect.DeepEqual(got, tt.want) {
+					t.Fatalf("normalization is not idempotent: %#v", got)
 				}
 			})
 		}
@@ -260,8 +303,11 @@ printf '%%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"Finis
 	if use == nil || result == nil {
 		t.Fatalf("missing live tool lifecycle: use=%+v result=%+v", use, result)
 	}
-	if use.Tool != "run_command" || use.Input["CommandLine"] != "echo hello" || use.Input["command"] != "echo hello" || use.CallID == "" {
+	if use.Tool != "run_command" || use.Input["command"] != "echo hello" || use.CallID == "" {
 		t.Fatalf("unexpected tool use: %+v", use)
+	}
+	if _, exists := use.Input["CommandLine"]; exists {
+		t.Fatalf("provider command was duplicated in normalized input: %+v", use.Input)
 	}
 	if result.CallID != use.CallID || result.Tool != use.Tool || result.Output != "hello\n" {
 		t.Fatalf("unexpected tool result: %+v", result)

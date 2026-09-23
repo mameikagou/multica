@@ -75,20 +75,27 @@ type antigravityToolState struct {
 	done bool
 }
 
-// Keep provider fields for inspection while exposing the canonical keys used
-// by the shared transcript's command detection and file summaries.
+// Normalize the shared transcript input without duplicating commands or file
+// bodies. Preserve collisions and unknown fields, and do not mutate the snapshot.
 func antigravityToolInput(parameters map[string]any) map[string]any {
 	input := maps.Clone(parameters)
-	for _, alias := range [][2]string{
-		{"CommandLine", "command"},
-		{"AbsolutePath", "file_path"},
-		{"TargetFile", "file_path"},
+	for _, alias := range []struct {
+		from, to   string
+		allowEmpty bool
+	}{
+		{"CommandLine", "command", false},
+		{"AbsolutePath", "file_path", false},
+		{"TargetFile", "file_path", false},
+		{"CodeContent", "content", true},
+		{"TargetContent", "old_string", true},
+		{"ReplacementContent", "new_string", true},
 	} {
-		if _, exists := input[alias[1]]; exists {
+		if _, exists := input[alias.to]; exists {
 			continue
 		}
-		if value, ok := parameters[alias[0]].(string); ok && value != "" {
-			input[alias[1]] = value
+		if value, ok := parameters[alias.from].(string); ok && (value != "" || alias.allowEmpty) {
+			input[alias.to] = value
+			delete(input, alias.from)
 		}
 	}
 	return input
