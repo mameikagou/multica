@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +77,25 @@ type antigravityToolState struct {
 	done bool
 }
 
+// Keep provider fields for inspection while exposing the canonical keys used
+// by the shared transcript's command detection and file summaries.
+func antigravityToolInput(parameters map[string]any) map[string]any {
+	input := maps.Clone(parameters)
+	for _, alias := range [][2]string{
+		{"CommandLine", "command"},
+		{"AbsolutePath", "file_path"},
+		{"TargetFile", "file_path"},
+	} {
+		if _, exists := input[alias[1]]; exists {
+			continue
+		}
+		if value, ok := parameters[alias[0]].(string); ok && value != "" {
+			input[alias[1]] = value
+		}
+	}
+	return input
+}
+
 // Each step has one tool lifecycle, even when agy repeats state snapshots or
 // only emits DONE. The existing daemon uploader handles these normal messages;
 // tool output must never be appended to the assistant's final answer.
@@ -102,7 +122,7 @@ func antigravityToolMessages(step *antigravityStreamStepUpdate, states map[int]a
 			if name == "" {
 				name = step.ToolInfo.Name
 			}
-			input = step.ToolInfo.Parameters
+			input = antigravityToolInput(step.ToolInfo.Parameters)
 		}
 		if name == "" {
 			return nil // A later snapshot may provide the missing metadata.

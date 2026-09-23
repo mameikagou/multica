@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { buildRunOutcome } from "./run-outcome";
-import { buildSteps } from "./build-steps";
+import { buildSteps, groupSteps } from "./build-steps";
+import { traceToolArgSummary } from "./trace-event-presenter";
 import type { TimelineItem } from "./build-timeline";
 
 let seq = 0;
@@ -24,6 +25,31 @@ function read(path: string): TimelineItem {
 }
 
 describe("buildRunOutcome", () => {
+  it("keeps normalized Antigravity commands visible and counts each command", () => {
+    const calls: TimelineItem[] = ["pwd", "git status", "go test ./..."].map((command) => ({
+      seq: ++seq,
+      type: "tool_use",
+      tool: "run_command",
+      input: {
+        Cwd: "/workspace",
+        CommandLine: `/bin/sh -c '${command}'`,
+        command: `/bin/sh -c '${command}'`,
+      },
+    }));
+    const steps = buildSteps(calls);
+
+    expect(groupSteps(steps).map((row) => row.kind)).toEqual(["call", "call", "call"]);
+    expect(buildRunOutcome(steps)?.commandCount).toBe(3);
+    expect(calls.map((call) => traceToolArgSummary(call.input))).toEqual([
+      "pwd",
+      "git status",
+      "go test ./...",
+    ]);
+    expect(
+      traceToolArgSummary({ AbsolutePath: "/workspace/a.go", file_path: "/workspace/a.go" }),
+    ).toBe("/workspace/a.go");
+  });
+
   it("counts changed lines from an edit", () => {
     const outcome = buildRunOutcome(buildSteps([edit("a.ts", "one\ntwo", "one\ntwo\nthree")]))!;
 

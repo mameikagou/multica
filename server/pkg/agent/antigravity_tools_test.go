@@ -87,6 +87,50 @@ func TestAntigravityToolsWithSlowConsumer(t *testing.T) {
 	}
 }
 
+func TestAntigravityToolInputNormalization(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, tool  string
+		input, want map[string]any
+	}{
+		{"shell command", "run_command", map[string]any{"CommandLine": "echo hello", "Cwd": "/workspace"}, map[string]any{"CommandLine": "echo hello", "Cwd": "/workspace", "command": "echo hello"}},
+		{"file read", "view_file", map[string]any{"AbsolutePath": "/workspace/a.go"}, map[string]any{"AbsolutePath": "/workspace/a.go", "file_path": "/workspace/a.go"}},
+		{"file write", "write_to_file", map[string]any{"TargetFile": "/workspace/a.go"}, map[string]any{"TargetFile": "/workspace/a.go", "file_path": "/workspace/a.go"}},
+		{"file edit", "replace_file_content", map[string]any{"TargetFile": "/workspace/a.go"}, map[string]any{"TargetFile": "/workspace/a.go", "file_path": "/workspace/a.go"}},
+		{"canonical fields win", "run_command", map[string]any{"CommandLine": "other", "command": "original", "AbsolutePath": "other", "file_path": "original"}, map[string]any{"CommandLine": "other", "command": "original", "AbsolutePath": "other", "file_path": "original"}},
+		{"explicit canonical null retained", "run_command", map[string]any{"CommandLine": "other", "command": nil}, map[string]any{"CommandLine": "other", "command": nil}},
+		{"invalid aliases ignored", "custom", map[string]any{"CommandLine": 123, "AbsolutePath": nil, "TargetFile": ""}, map[string]any{"CommandLine": 123, "AbsolutePath": nil, "TargetFile": ""}},
+		{"unknown parameters retained", "custom", map[string]any{"custom": true}, map[string]any{"custom": true}},
+		{"missing parameters", "run_command", nil, nil},
+	}
+	for _, tt := range tests {
+		for _, state := range []string{"ACTIVE", "DONE"} {
+			t.Run(tt.name+"/"+state, func(t *testing.T) {
+				before, err := json.Marshal(tt.input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				index := 0
+				step := antigravityStreamStepUpdate{
+					StepIndex: &index, State: state, StepType: "tool", ToolName: tt.tool,
+					ToolInfo: &antigravityStreamTool{Parameters: tt.input},
+				}
+				messages := antigravityToolMessages(&step, make(map[int]antigravityToolState))
+				if len(messages) == 0 || messages[0].Type != MessageToolUse || !reflect.DeepEqual(messages[0].Input, tt.want) {
+					t.Fatalf("messages = %+v, want tool use input %#v", messages, tt.want)
+				}
+				after, err := json.Marshal(tt.input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(before) != string(after) {
+					t.Fatalf("provider parameters mutated: %s -> %s", before, after)
+				}
+			})
+		}
+	}
+}
+
 func TestAntigravityToolMessages(t *testing.T) {
 	t.Parallel()
 	verboseOutput := strings.Repeat("x", 9000)
@@ -216,7 +260,7 @@ printf '%%s\n' '{"event":"result","result":{"status":"SUCCESS","response":"Finis
 	if use == nil || result == nil {
 		t.Fatalf("missing live tool lifecycle: use=%+v result=%+v", use, result)
 	}
-	if use.Tool != "run_command" || use.Input["CommandLine"] != "echo hello" || use.CallID == "" {
+	if use.Tool != "run_command" || use.Input["CommandLine"] != "echo hello" || use.Input["command"] != "echo hello" || use.CallID == "" {
 		t.Fatalf("unexpected tool use: %+v", use)
 	}
 	if result.CallID != use.CallID || result.Tool != use.Tool || result.Output != "hello\n" {
