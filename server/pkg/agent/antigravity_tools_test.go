@@ -89,6 +89,7 @@ func TestAntigravityToolsWithSlowConsumer(t *testing.T) {
 
 func TestAntigravityToolMessages(t *testing.T) {
 	t.Parallel()
+	verboseOutput := strings.Repeat("x", 9000)
 	tests := []struct {
 		name  string
 		steps []string
@@ -117,7 +118,15 @@ func TestAntigravityToolMessages(t *testing.T) {
 			steps: []string{`{"step_index":2,"state":"DONE","step_type":"tool","tool_info":{"name":"run_command","output":"partial","error":{"type":"exit","message":"exit 1"}}}`},
 			want: []Message{
 				{Type: MessageToolUse, CallID: "agy-step-2", Tool: "run_command"},
-				{Type: MessageToolResult, CallID: "agy-step-2", Tool: "run_command", Output: "partial\nTool error: exit: exit 1"},
+				{Type: MessageToolResult, CallID: "agy-step-2", Tool: "run_command", Output: "Tool error: exit: exit 1\npartial"},
+			},
+		},
+		{
+			name:  "failure detail survives prefix truncation of verbose output",
+			steps: []string{fmt.Sprintf(`{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"output":%q,"error":{"message":"exit 1"}}}`, verboseOutput)},
+			want: []Message{
+				{Type: MessageToolUse, CallID: "agy-step-2", Tool: "run_command"},
+				{Type: MessageToolResult, CallID: "agy-step-2", Tool: "run_command", Output: "Tool error: exit 1\n" + verboseOutput},
 			},
 		},
 		{

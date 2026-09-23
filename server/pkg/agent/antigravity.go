@@ -125,10 +125,12 @@ func antigravityToolMessages(step *antigravityStreamStepUpdate, states map[int]a
 						detail = info.Error.Type
 					}
 				}
+				// The daemon uploads a bounded prefix of tool output. Put the
+				// error first so verbose stdout cannot hide the failure detail.
 				if output != "" {
-					output += "\n"
+					output = "\n" + output
 				}
-				output += "Tool error: " + detail
+				output = "Tool error: " + detail + output
 			}
 		}
 		messages = append(messages, Message{Type: MessageToolResult, Tool: state.name, CallID: callID, Output: output})
