@@ -22,6 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
@@ -9083,6 +9085,21 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		var pendingThinking strings.Builder
 		var batch []TaskMessageData
 		callIDToTool := map[string]string{}
+		// Provider IDs can restart on a same-task retry (for example item_0).
+		// Allocate opaque transcript IDs per execution, including orphan results,
+		// so neither a retry nor a missing call can steal another call's result.
+		transcriptCallIDs := map[string]string{}
+		transcriptCallID := func(providerID string) string {
+			if providerID == "" {
+				return ""
+			}
+			if id, ok := transcriptCallIDs[providerID]; ok {
+				return id
+			}
+			id := uuid.NewString()
+			transcriptCallIDs[providerID] = id
+			return id
+		}
 
 		flush := func() {
 			mu.Lock()
@@ -9202,9 +9219,10 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					s := msgSeq.Add(1)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
-						Seq:  int(s),
-						Type: "tool_use",
-						Tool: msg.Tool,
+						Seq:    int(s),
+						Type:   "tool_use",
+						CallID: transcriptCallID(msg.CallID),
+						Tool:   msg.Tool,
 						// Redact before the payload leaves this process, not
 						// only on arrival. The server redacts again in its
 						// ingest handler, but that is the *remote* side: a
@@ -9245,6 +9263,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					batch = append(batch, TaskMessageData{
 						Seq:    int(s),
 						Type:   "tool_result",
+						CallID: transcriptCallID(msg.CallID),
 						Tool:   toolName,
 						Output: output,
 					})
