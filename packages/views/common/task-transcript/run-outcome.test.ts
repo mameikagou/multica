@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { buildRunOutcome } from "./run-outcome";
-import { buildSteps, groupSteps } from "./build-steps";
-import { traceToolArgSummary } from "./trace-event-presenter";
+import { buildSteps, groupSteps, toolKindTotals } from "./build-steps";
+import { traceEventDetail, traceToolArgSummary } from "./trace-event-presenter";
 import type { TimelineItem } from "./build-timeline";
 
 let seq = 0;
@@ -32,7 +32,6 @@ describe("buildRunOutcome", () => {
       tool: "run_command",
       input: {
         Cwd: "/workspace",
-        CommandLine: `/bin/sh -c '${command}'`,
         command: `/bin/sh -c '${command}'`,
       },
     }));
@@ -45,10 +44,56 @@ describe("buildRunOutcome", () => {
       "git status",
       "go test ./...",
     ]);
-    expect(
-      traceToolArgSummary({ AbsolutePath: "/workspace/a.go", file_path: "/workspace/a.go" }),
-    ).toBe("/workspace/a.go");
+    expect(traceToolArgSummary({ file_path: "/workspace/a.go" })).toBe("/workspace/a.go");
   });
+
+  it.each([
+    { name: "write", tool: "write_to_file", input: { content: "hello" }, kind: "file" },
+    { name: "empty file", tool: "write_to_file", input: { content: "" }, kind: "file" },
+    {
+      name: "edit",
+      tool: "replace_file_content",
+      input: { old_string: "before", new_string: "after" },
+      kind: "diff",
+    },
+    {
+      name: "deletion",
+      tool: "replace_file_content",
+      input: { old_string: "before", new_string: "" },
+      kind: "diff",
+    },
+    {
+      name: "insertion",
+      tool: "replace_file_content",
+      input: { old_string: "", new_string: "after" },
+      kind: "diff",
+    },
+  ])(
+    "renders a normalized Antigravity $name and classifies its time as writing",
+    ({ tool, input, kind }) => {
+      const call: TimelineItem = {
+        seq: ++seq,
+        type: "tool_use",
+        tool,
+        input: { file_path: "/workspace/a.go", ...input },
+        created_at: "2026-09-23T00:00:00.000Z",
+      };
+      const steps = buildSteps([
+        call,
+        {
+          seq: ++seq,
+          type: "tool_result",
+          tool,
+          output: "ok",
+          created_at: "2026-09-23T00:00:01.000Z",
+        },
+      ]);
+
+      expect(traceEventDetail(call)).toMatchObject({ kind, path: "/workspace/a.go" });
+      expect(toolKindTotals(steps)).toEqual({ command: 0, write: 1000, read: 0, other: 0 });
+      expect(buildRunOutcome(steps)?.paths).toEqual(["/workspace/a.go"]);
+    },
+  );
 
   it("counts changed lines from an edit", () => {
     const outcome = buildRunOutcome(buildSteps([edit("a.ts", "one\ntwo", "one\ntwo\nthree")]))!;
