@@ -465,6 +465,7 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 
 		trySend(msgCh, Message{Type: MessageStatus, Status: "running"})
 
+	streamLoop:
 		for scanner.Scan() {
 			line := scanner.Text()
 			var event antigravityStreamEvent
@@ -487,7 +488,14 @@ func (b *antigravityBackend) execute(ctx context.Context, prompt string, opts Ex
 						streamSessionID = event.StepUpdate.ConversationID
 					}
 					for _, message := range antigravityToolMessages(event.StepUpdate, streamTools) {
-						trySend(msgCh, message)
+						// Tool lifecycle events also drive the daemon's in-flight
+						// counter. Unlike best-effort text, neither half may be
+						// dropped when a transcript consumer temporarily falls behind.
+						select {
+						case msgCh <- message:
+						case <-runCtx.Done():
+							break streamLoop
+						}
 					}
 					if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.StepIndex != nil && *event.StepUpdate.StepIndex >= streamLatestAgentResponseStep {
 						// Only the latest response step determines whether the answer
