@@ -7,9 +7,85 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestAntigravityToolsWithSlowConsumer(t *testing.T) {
+	for _, cancelWhileFull := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel=%v", cancelWhileFull), func(t *testing.T) {
+			t.Parallel()
+			const calls = 400 // More lifecycle events than the message buffer holds.
+			var script strings.Builder
+			script.WriteString("#!/bin/sh\n")
+			for i := 0; i < calls; i++ {
+				fmt.Fprintf(&script, "printf '%%s\\n' '{\"event\":\"step_update\",\"step_update\":{\"step_index\":%d,\"state\":\"DONE\",\"step_type\":\"tool\",\"tool_name\":\"read_file\",\"tool_info\":{\"output\":\"ok\"}}}'\n", i)
+			}
+			script.WriteString("printf '%s\\n' '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"Finished\"}}'\n")
+			fakePath := filepath.Join(t.TempDir(), "agy")
+			writeTestExecutable(t, fakePath, []byte(script.String()))
+			backend, err := New("antigravity", Config{ExecutablePath: fakePath, Logger: quietAntigravityLogger()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			session, err := backend.Execute(ctx, "ignored", ExecOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for len(session.Messages) < cap(session.Messages) {
+				select {
+				case <-ctx.Done():
+					t.Fatal("message buffer never filled")
+				case <-time.After(time.Millisecond):
+				}
+			}
+			if cancelWhileFull {
+				cancel()
+				select {
+				case result := <-session.Result:
+					if result.Status != "aborted" {
+						t.Fatalf("result = %+v, want cancellation", result)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("cancellation blocked behind the full message buffer")
+				}
+				return
+			}
+			// Without backpressure the process completes here, having discarded
+			// most tool events. A live consumer may temporarily pause just like this.
+			select {
+			case <-session.Result:
+				t.Fatal("execution completed while its tool events could not be delivered")
+			case <-time.After(100 * time.Millisecond):
+			}
+			uses, results := map[string]bool{}, map[string]bool{}
+			for message := range session.Messages {
+				var seen map[string]bool
+				switch message.Type {
+				case MessageToolUse:
+					seen = uses
+				case MessageToolResult:
+					seen = results
+				default:
+					continue
+				}
+				if message.CallID == "" || seen[message.CallID] {
+					t.Fatalf("missing or duplicate call identity: %+v", message)
+				}
+				seen[message.CallID] = true
+			}
+			if len(uses) != calls || !reflect.DeepEqual(uses, results) {
+				t.Fatalf("tool events lost: uses=%d results=%d, want %d matched pairs", len(uses), len(results), calls)
+			}
+			if result := <-session.Result; result.Status != "completed" {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+		})
+	}
+}
 
 func TestAntigravityToolMessages(t *testing.T) {
 	t.Parallel()
