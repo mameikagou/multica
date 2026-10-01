@@ -606,11 +606,12 @@ func claudeStaticModels() []Model {
 }
 
 // codexStaticModels is the fallback for Codex versions older than 0.122.0
-// and for failed/malformed live and bundled discovery calls. Keep it in
-// sync with the visible entries in the newest locally verified bundled
-// catalog, plus still-common models from older Codex releases. Each entry
-// carries its own reasoning catalog so old/offline CLIs retain the same model
-// + thinking picker contract as dynamic discovery. Service tiers are
+// and for failed/malformed live and bundled discovery calls. It lists the
+// visible entries of the newest locally verified live catalog — which can run
+// ahead of the bundled one (gpt-6.1-sol was live-only on codex-cli 0.159.0)
+// — plus still-common models from older Codex releases.
+// Each entry carries its own reasoning catalog so old/offline CLIs retain the
+// same model + thinking picker contract as dynamic discovery. Service tiers are
 // intentionally NOT guessed here: they are runtime/version/account-sensitive,
 // so a discovery failure hides the speed picker and fails the override closed.
 func codexStaticModels() []Model {
@@ -652,6 +653,10 @@ func codexStaticModels() []Model {
 	}
 	return []Model{
 		{ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Provider: "openai", Default: true, Thinking: standardThinking("low", true, true)},
+		{ID: "gpt-6-astra", Label: "GPT-6 Astra", Provider: "openai", Thinking: standardThinking("low", true, true)},
+		{ID: "gpt-6.1-sol", Label: "GPT-6.1 Sol", Provider: "openai", Thinking: standardThinking("low", true, true)},
+		{ID: "gpt-6-sol", Label: "GPT-6 Sol", Provider: "openai", Thinking: standardThinking("medium", true, true)},
+		{ID: "gpt-6-luna", Label: "GPT-6 Luna", Provider: "openai", Thinking: standardThinking("medium", true, false)},
 		{ID: "gpt-5.6-terra", Label: "GPT-5.6 Terra", Provider: "openai", Thinking: standardThinking("medium", true, true)},
 		{ID: "gpt-5.6-luna", Label: "GPT-5.6 Luna", Provider: "openai", Thinking: standardThinking("medium", true, false)},
 		{ID: "gpt-5.5", Label: "GPT-5.5", Provider: "openai", Thinking: standardThinking("medium", false, false)},

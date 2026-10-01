@@ -442,6 +442,14 @@ func parseCodexModelCatalog(raw []byte) ([]Model, error) {
 
 func normalizeCodexModelLabel(id, label string) string {
 	switch id {
+	case "gpt-6-astra":
+		return "GPT-6 Astra"
+	case "gpt-6.1-sol":
+		return "GPT-6.1 Sol"
+	case "gpt-6-sol":
+		return "GPT-6 Sol"
+	case "gpt-6-luna":
+		return "GPT-6 Luna"
 	case "gpt-5.6-sol":
 		return "GPT-5.6 Sol"
 	case "gpt-5.6-terra":

@@ -58,7 +58,7 @@ func TestPriceForModelAliasAnthropicCurrentGeneration(t *testing.T) {
 	}
 }
 
-func TestPriceForModelAliasCodexGPT56(t *testing.T) {
+func TestPriceForModelAliasCodexCurrentGeneration(t *testing.T) {
 	// Official rates from OpenAI's GPT-5.6 announcement: cache read = 0.1x
 	// input (90% cached-input discount), cache write = 1.25x input.
 	cases := []struct {
@@ -68,6 +68,22 @@ func TestPriceForModelAliasCodexGPT56(t *testing.T) {
 		{
 			model: "gpt-5.6-sol",
 			want:  ModelPrice{Provider: "openai", Model: "gpt-5.6-sol", InputPerM: 5, CacheReadPerM: 0.5, CacheWritePerM: 6.25, OutputPerM: 30},
+		},
+		{
+			model: "gpt-6.1-sol",
+			want:  ModelPrice{Provider: "openai", Model: "gpt-6.1-sol", InputPerM: 2, CacheReadPerM: 0.1, CacheWritePerM: 2.5, OutputPerM: 10},
+		},
+		{
+			model: "openai:gpt-6.1-sol[1m]",
+			want:  ModelPrice{Provider: "openai", Model: "gpt-6.1-sol", InputPerM: 2, CacheReadPerM: 0.1, CacheWritePerM: 2.5, OutputPerM: 10},
+		},
+		{
+			model: "openai:gpt-6-sol",
+			want:  ModelPrice{Provider: "openai", Model: "gpt-6-sol", InputPerM: 2, CacheReadPerM: 0.2, CacheWritePerM: 2.5, OutputPerM: 10},
+		},
+		{
+			model: "openai/gpt-6-luna",
+			want:  ModelPrice{Provider: "openai", Model: "gpt-6-luna", InputPerM: 0.1, CacheReadPerM: 0.01, CacheWritePerM: 0.125, OutputPerM: 0.5},
 		},
 		{
 			model: "openai:gpt-5.6-terra",
@@ -95,6 +111,13 @@ func TestPriceForModelAliasCodexGPT56(t *testing.T) {
 	// slug is always dotted and the frontend does not dash-normalize, so both
 	// sides surface these as unmapped instead of silently pricing them.
 	for _, model := range []string{
+		"gpt-6-astra-pro",
+		"gpt-6.1-sol-pro",
+		"gpt-6-1-sol",
+		"gpt-6-sol-high",
+		"gpt-6-luna-pro",
+		"gpt-6-astra/unknown",
+		"gpt-6-astra-high",
 		"gpt-5.6-luna-pro",
 		"gpt-5.6-luna/unknown",
 		"gpt-5.6-sol-high",

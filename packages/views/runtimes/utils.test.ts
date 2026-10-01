@@ -277,13 +277,18 @@ describe("estimateCost", () => {
     ).toBeCloseTo(1.75 + 14, 5);
   });
 
-  it("prices the gpt-5.6 series per OpenAI's official cache-aware rates", () => {
+  it("prices current Codex models per OpenAI's official cache-aware rates", () => {
     // Official announcement rates. 5.6 is the first OpenAI generation to bill
-    // cache writes separately: cacheRead = 0.1x input, cacheWrite = 1.25x
+    // cache writes separately: cacheRead generally = 0.1x input (GPT-6.1
+    // Sol uses 0.05x), cacheWrite = 1.25x
     // input. Cover every model x every token category so a wrong cache rate
     // can't hide behind an input-only assertion. `total` is 1M of each of the
     // four categories priced at its own rate.
     const cases = [
+      { model: "gpt-6-astra", input: 10, cacheRead: 1, cacheWrite: 12.5, output: 50, total: 73.5 },
+      { model: "gpt-6.1-sol", input: 2, cacheRead: 0.1, cacheWrite: 2.5, output: 10, total: 14.6 },
+      { model: "gpt-6-sol", input: 2, cacheRead: 0.2, cacheWrite: 2.5, output: 10, total: 14.7 },
+      { model: "gpt-6-luna", input: 0.1, cacheRead: 0.01, cacheWrite: 0.125, output: 0.5, total: 0.735 },
       { model: "gpt-5.6-sol", input: 5, cacheRead: 0.5, cacheWrite: 6.25, output: 30, total: 41.75 },
       { model: "gpt-5.6-terra", input: 2.5, cacheRead: 0.25, cacheWrite: 3.125, output: 15, total: 20.875 },
       { model: "gpt-5.6-luna", input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 6, total: 8.35 },
@@ -314,6 +319,13 @@ describe("estimateCost", () => {
     }
   });
 
+  it("resolves current Codex routing prefixes and context tags", () => {
+    for (const model of ["openai:gpt-6.1-sol", "openai/gpt-6.1-sol", "gpt-6.1-sol[1m]"]) {
+      expect(isModelPriced(model, "codex")).toBe(true);
+      expect(estimateCost({ ...zeroUsage, provider: "codex", model, cache_read_tokens: 1_000_000 })).toBeCloseTo(0.1, 5);
+    }
+  });
+
   it("flags catalog SKUs without a published price (gpt-5.5-mini) as unmapped", () => {
     // `gpt-5.5-mini` is in the Codex catalog but OpenAI hasn't published a
     // public rate. We refuse to absorb it into `gpt-5.5` — the diagnostic
@@ -340,6 +352,12 @@ describe("estimateCost", () => {
     // literal-dot alias in server/internal/metrics/pricing.go (MUL-4347).
     expect(isModelPriced("gpt-5-6-luna")).toBe(false);
     expect(isModelPriced("gpt-5-6-sol")).toBe(false);
+    expect(isModelPriced("gpt-6-astra")).toBe(true);
+    expect(isModelPriced("gpt-6-astra-pro")).toBe(false);
+    expect(isModelPriced("gpt-6.1-sol-pro")).toBe(false);
+    expect(isModelPriced("gpt-6-1-sol")).toBe(false);
+    expect(isModelPriced("gpt-6-sol-high")).toBe(false);
+    expect(isModelPriced("gpt-6-luna-pro")).toBe(false);
     expect(
       estimateCost({
         ...zeroUsage,
