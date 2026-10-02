@@ -153,6 +153,11 @@ Source entry points: `server/internal/daemon/prompt.go`
 
 ## Upgrade acceptance
 
+This fork follows a minimal-update policy: do not routinely synchronize with
+upstream or upgrade just because a release is available. Backport only requested
+changes or fixes needed for an identified problem, adapting their necessary
+dependencies without importing unrelated features or replacing local behavior.
+
 Antigravity terminal errors are reconciled against a pre-launch transcript
 boundary, not error text. Capture the exact account's file identity, prefix
 digest and last step before invoking the CLI. Recovery requires exactly one
