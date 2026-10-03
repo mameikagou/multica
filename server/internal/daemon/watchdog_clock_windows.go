@@ -7,7 +7,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var queryUnbiasedInterruptTimePrecise = windows.NewLazySystemDLL("kernel32.dll").NewProc("QueryUnbiasedInterruptTimePrecise")
+// Resolve through the Windows 10 API set: kernel32.dll does not export the
+// precise variant, even though the API documentation lists it as the DLL.
+var queryUnbiasedInterruptTimePrecise = windows.NewLazySystemDLL("api-ms-win-core-realtime-l1-1-1.dll").NewProc("QueryUnbiasedInterruptTimePrecise")
 
 // Go's Windows monotonic clock includes suspend. This Windows 10+ API instead
 // returns awake time in 100ns units, unaffected by sleep or wall-clock changes.
