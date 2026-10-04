@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -45,7 +46,7 @@ message_id, task_id (run ID), and queued flag. Acknowledgement is not completion
 
 This uses the same direct-chat input as the web composer, not an agent-authored
 message card. It does not create a chat or an issue, wait for a reply, or retry.
-After a timeout or a lost response, check the destination before sending again:
+After a server error, timeout or lost response, check the destination before sending again:
 the server may already have accepted the message. Task credentials never fall
 back to a saved member profile.`,
 		Example: `  multica chat list --title "Review" --output json
@@ -124,8 +125,8 @@ func runChatSend(cmd *cobra.Command, args []string) error {
 	path := "/api/chat/sessions/" + util.UUIDToString(sessionID) + "/messages"
 	if err := client.PostJSON(ctx, path, map[string]any{"content": body}, &result); err != nil {
 		var httpErr *cli.HTTPError
-		if !errors.As(err, &httpErr) {
-			fmt.Fprintln(os.Stderr, "Delivery may have succeeded. Check the destination before sending again; this command did not retry.")
+		if !errors.As(err, &httpErr) || httpErr.StatusCode >= http.StatusInternalServerError {
+			return cli.WithUserMessage("Delivery may have succeeded. Check the destination before sending again; this command did not retry.", err)
 		}
 		return fmt.Errorf("send chat message: %w", err)
 	}

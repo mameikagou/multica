@@ -90,9 +90,10 @@ agent-authored card or a new issue.
 The response includes `message_id`, `task_id` (run ID), and `queued`. A busy
 session queues the new turn; acknowledgement is not completion. The command
 does not create sessions, send attachments, wait for replies, forward replies,
-or retry. If the response is lost, check the target conversation before sending
-again: the original send may already have committed. Do not assume an error
-means nothing was sent or turn it into an agent-to-agent auto-reply loop.
+or retry. After a server error, timeout or lost response, check the target
+conversation before sending again: the original send may already have committed.
+Do not assume an error means nothing was sent or turn it into an agent-to-agent
+auto-reply loop.
 
 `chat history` and `chat thread` remain scoped to the caller's current
 conversation/channel; neither becomes a cross-session transcript reader.
