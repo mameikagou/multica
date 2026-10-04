@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/multica-ai/multica/server/internal/cli"
 )
 
 const chatSessionTestID = "018f3caa-0000-7000-8000-000000000001"
@@ -21,6 +24,7 @@ func chatSessionTestEnv(t *testing.T, serverURL string) {
 	t.Setenv("MULTICA_TOKEN", "mat_chat_test")
 	t.Setenv("MULTICA_AGENT_ID", "agent-chat-test")
 	t.Setenv("MULTICA_TASK_ID", "task-chat-test")
+	t.Setenv("LC_ALL", "C")
 }
 
 func executeChatSessionTest(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
@@ -136,7 +140,7 @@ func TestChatSessionSendInvalidInputDoesNotRequest(t *testing.T) {
 }
 
 func TestChatSessionSendFailureDoesNotRetry(t *testing.T) {
-	for _, status := range []int{401, 403, 404, 409, 429, 500, 503} {
+	for _, status := range []int{401, 403, 404, 409, 429, 500, 502, 503, 504} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			var calls atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +153,24 @@ func TestChatSessionSendFailureDoesNotRetry(t *testing.T) {
 			out, err := executeChatSessionTest(t, newChatSendCmd(), chatSessionTestID, "--body", "hello")
 			if err == nil || calls.Load() != 1 || out != "" {
 				t.Fatalf("error=%v calls=%d output=%q", err, calls.Load(), out)
+			}
+			var httpErr *cli.HTTPError
+			if !errors.As(err, &httpErr) || httpErr.StatusCode != status {
+				t.Fatalf("HTTP classification lost: %v", err)
+			}
+			message := cli.FormatError(err, false)
+			if status >= 500 {
+				if !strings.Contains(message, "Check the destination before sending again") || strings.Contains(message, "try again later") {
+					t.Fatalf("unsafe delivery guidance: %q", message)
+				}
+				if !strings.Contains(cli.FormatError(err, true), "send rejected") {
+					t.Fatal("debug output lost the underlying server response")
+				}
+			} else {
+				var userErr *cli.UserMessageError
+				if errors.As(err, &userErr) {
+					t.Fatalf("explicit rejection should keep its original guidance: %v", err)
+				}
 			}
 		})
 	}
@@ -171,6 +193,9 @@ func TestChatSessionSendDroppedResponseDoesNotRetry(t *testing.T) {
 	if err == nil || calls.Load() != 1 {
 		t.Fatalf("error=%v calls=%d", err, calls.Load())
 	}
+	if !strings.Contains(cli.FormatError(err, false), "Check the destination before sending again") || cli.ExitCodeFor(err) != cli.ExitNetwork {
+		t.Fatalf("lost delivery guidance or network classification: %v", err)
+	}
 }
 
 func TestChatSessionSendMalformedAcknowledgementDoesNotRetry(t *testing.T) {
@@ -187,6 +212,9 @@ func TestChatSessionSendMalformedAcknowledgementDoesNotRetry(t *testing.T) {
 			out, err := executeChatSessionTest(t, newChatSendCmd(), chatSessionTestID, "--body", "hello")
 			if err == nil || calls.Load() != 1 || out != "" {
 				t.Fatalf("error=%v calls=%d output=%q", err, calls.Load(), out)
+			}
+			if !strings.Contains(strings.ToLower(cli.FormatError(err, false)), "check the destination before sending again") {
+				t.Fatalf("missing ambiguous-delivery guidance: %v", err)
 			}
 		})
 	}

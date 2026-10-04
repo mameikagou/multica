@@ -206,7 +206,7 @@ multica chat send <session-id> --body "Please review the proposed change."
 
 `chat send` submits a normal direct-chat input, not an agent-authored message card. The server persists the message and enqueues a **run**, not an issue. If the session is busy, the turn queues behind its pending work. JSON output includes `message_id`, `task_id` (run ID), and `queued`; acceptance does not mean the agent has finished replying. Replies appear in the destination chat through the normal runtime flow.
 
-The command sends once, without waiting for a reply or automatically retrying. After a timeout or a lost response, check the destination before sending again: it may already have accepted the message. No chat creation, attachment sending, or automatic reply forwarding is added.
+The command sends once, without waiting for a reply or automatically retrying. After a server error, timeout or lost response, check the destination before sending again: it may already have accepted the message. No chat creation, attachment sending, or automatic reply forwarding is added.
 
 ## IDs and output formats
 
