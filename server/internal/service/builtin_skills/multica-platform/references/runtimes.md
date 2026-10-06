@@ -98,6 +98,44 @@ auto-reply loop.
 `chat history` and `chat thread` remain scoped to the caller's current
 conversation/channel; neither becomes a cross-session transcript reader.
 
+## Chat queue controls
+
+```bash
+multica chat queue <session-id> --output table
+multica chat queue clear <session-id> --dry-run
+multica chat queue now <session-id> <task-id> --dry-run
+multica chat queue cancel <session-id> <task-id> --dry-run
+multica chat queue cancel <session-id> <task-id> --edit --dry-run
+multica chat stop <session-id> --dry-run
+multica chat stop <session-id> --clear-queue --dry-run
+```
+
+Use full UUIDs from `chat list` and `chat queue`. `queue` is read-only;
+all other commands are real writes unless `--dry-run` is present. Dry runs
+read a snapshot and print planned requests as JSON. Remove `--dry-run` only
+when the user has authorized the corresponding action. Existing session
+ownership, workspace and task credential checks apply without profile fallback.
+
+`queue clear` cancels queued follow-ups while preserving the head run, even if
+that head is still queued. `queue now` promotes the selected follow-up and then
+requests cancellation of the active run returned by the server. This follows
+the web Send now flow; dispatch remains asynchronous. `queue cancel` uses
+server-side queued-status and session-ID guards; `--edit` restores the message
+and attachments as a draft and returns the native restore payload. It does not
+open an editor or resubmit the message.
+
+`stop` cancels only the captured head; remaining follow-ups may start next.
+`stop --clear-queue` clears follow-ups first and rechecks the head before
+cancelling. If the head has changed, it refuses to cancel the new run.
+No command freezes a session or resumes a suspended process. New messages can
+still enqueue runs. Cancellation does not undo actions already completed.
+
+The Send now and stop-with-clear flows are separate requests, not transactions;
+concurrent sends may change the queue. Commands never automatically retry a
+write and report partial progress on failure. After a timeout or error, inspect
+`chat queue` and the conversation before acting again. Do not cancel the
+current agent's own run as a smoke test or mutate real user chats for testing.
+
 ## Task CLI boundary
 
 The daemon injects a task-scoped `mat_` credential for Multica API commands and
