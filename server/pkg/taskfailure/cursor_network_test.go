@@ -14,6 +14,9 @@ func TestClassifyCursorConnectTimeout(t *testing.T) {
 		if got := Classify(input); got != ReasonAgentProviderNetwork {
 			t.Errorf("Classify(%q) = %s, want %s", input, got, ReasonAgentProviderNetwork)
 		}
+		if got := NormalizeDaemonReason(ReasonAgentProcessFailure.String(), input); got != ReasonAgentProviderNetwork {
+			t.Errorf("NormalizeDaemonReason(process_failure, %q) = %s, want %s", input, got, ReasonAgentProviderNetwork)
+		}
 	}
 }
 
@@ -33,6 +36,60 @@ func TestClassifyCursorConnectTimeoutScope(t *testing.T) {
 	} {
 		if got := Classify(input); got == ReasonAgentProviderNetwork {
 			t.Errorf("Classify(%q) must not classify unrelated tool failures as provider network errors", input)
+		}
+	}
+}
+
+func TestClassifyCursorConnectionStalled(t *testing.T) {
+	t.Parallel()
+	for _, stderr := range []string{
+		"RetriableError: Connection stalled",
+		"RetriableError: Connection stalled repeatedly",
+		"RetriableError: Connection stalled\n    at transport (/cursor/index.js:1:1)",
+	} {
+		for _, input := range []string{
+			stderr,
+			"cursor-agent exited with error: exit status 1 (result_seen=false, exit_code=1, scanner_error=false, event_count=463, invalid_event_count=0, last_event_type=system); actions completed before finalization may already have taken effect; cursor stderr: " + stderr,
+			"cursor-agent prompt write failed: write |1: broken pipe; cursor stderr: " + stderr,
+			strings.ToUpper(stderr),
+			strings.ToUpper("cursor-agent exited with error: exit status 1; cursor stderr: " + stderr),
+		} {
+			if got := Classify(input); got != ReasonAgentProviderNetwork {
+				t.Errorf("Classify(%q) = %s, want %s", input, got, ReasonAgentProviderNetwork)
+			}
+			for _, legacy := range []Reason{ReasonAgentProcessFailure, ReasonAgentUnknown, "agent_error"} {
+				if got := NormalizeDaemonReason(legacy.String(), input); got != ReasonAgentProviderNetwork {
+					t.Errorf("NormalizeDaemonReason(%s, %q) = %s, want %s", legacy, input, got, ReasonAgentProviderNetwork)
+				}
+			}
+		}
+	}
+}
+
+func TestCursorConnectionStalledScope(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{
+		"Connection stalled",
+		"RetriableError: Something else",
+		"RetriableError: Connection stalled_OTHER",
+		"RetriableError: Connection stalled in a local tool",
+		"MCP server error: RetriableError: Connection stalled",
+		"some tool exited with error: exit status 1; cursor stderr: RetriableError: Connection stalled",
+		"cursor-agent exited with error: exit status 1; cursor stderr: local tool failed: RetriableError: Connection stalled",
+		"cursor-agent prompt write failed: broken pipe; cursor stderr: MCP server error: RetriableError: Connection stalled",
+		"cursor-agent exited with error: exit status 1; RetriableError: Connection stalled",
+		"RetriableError: Connection stalled\nAPI Error: 403 Forbidden",
+	} {
+		if got := Classify(input); got == ReasonAgentProviderNetwork {
+			t.Errorf("Classify(%q) must not classify unrelated failures as provider network errors", input)
+		}
+		if got := NormalizeDaemonReason(ReasonAgentProcessFailure.String(), input); got != ReasonAgentProcessFailure {
+			t.Errorf("NormalizeDaemonReason(process_failure, %q) = %s, want it preserved", input, got)
+		}
+	}
+	for _, reason := range []Reason{ReasonAgentProviderAuthOrAccess, ReasonAgentProviderQuotaLimit, ReasonAgentContextOverflow, ReasonAgentTimeout} {
+		if got := NormalizeDaemonReason(reason.String(), "RetriableError: Connection stalled"); got != reason {
+			t.Errorf("NormalizeDaemonReason(%s, stalled) = %s, want it preserved", reason, got)
 		}
 	}
 }

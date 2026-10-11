@@ -212,9 +212,9 @@ func Classify(rawError string) Reason {
 	//    messages and the stable Pi/OMP exit composite, rather than treating
 	//    the same broad substrings from local tools or MCP servers as retryable.
 	//    Mirror these Pi message shapes into the MUL-1949 offline backfill SQL.
-	//    Cursor can exit before its first stream event with a Node connect
-	//    ETIMEDOUT error. Keep that failed resume network-safe instead of
-	//    letting the exit-status wrapper trigger a fresh-session retry.
+	//    Cursor reports connect ETIMEDOUT and mid-stream RetriableError:
+	//    Connection stalled failures. Keep those failed resumes network-safe
+	//    instead of letting the exit-status wrapper trigger a fresh-session retry.
 	case isPiProviderNetworkError(lower), isCursorProviderNetworkError(lower),
 		containsAny(lower,
 			"stream disconnected",
@@ -437,7 +437,7 @@ var legacyEnvironmentPrepareWitnesses = []string{
 // bare or in the adapter's exit or prompt-write failure wrapper. A provider
 // timeout before stdin is drained also breaks the pending prompt write; that
 // secondary error must not hide the network evidence in stderr. Do not match
-// ETIMEDOUT globally: a local tool or MCP timeout is not provider evidence.
+// transport phrases globally: local tool or MCP failures are not provider evidence.
 func isCursorProviderNetworkError(lower string) bool {
 	if strings.HasPrefix(lower, "cursor-agent exited with error: ") ||
 		strings.HasPrefix(lower, "cursor-agent prompt write failed: ") {
@@ -447,7 +447,26 @@ func isCursorProviderNetworkError(lower string) bool {
 		}
 		lower = strings.TrimSpace(stderr)
 	}
-	return strings.HasPrefix(lower, "error: [unavailable] connect etimedout ")
+	if strings.HasPrefix(lower, "error: [unavailable] connect etimedout ") {
+		return true
+	}
+	// Node may append a stack trace. Match the exact first-line message, not
+	// an arbitrary RetriableError or a substring quoted by another tool.
+	firstLine, _, _ := strings.Cut(lower, "\n")
+	switch strings.TrimSpace(firstLine) {
+	case "retriableerror: connection stalled", "retriableerror: connection stalled repeatedly":
+		return true
+	}
+	return false
+}
+
+// Older daemons report these Cursor transport failures as process_failure
+// (wrapped exit), unknown (bare stderr), or the coarse agent_error bucket.
+// Preserve more specific reasons such as auth, quota, and hard timeouts.
+var legacyCursorProviderNetworkReasons = map[string]bool{
+	string(ReasonAgentProcessFailure): true,
+	string(ReasonAgentUnknown):        true,
+	"agent_error":                     true,
 }
 
 func isPiProviderNetworkError(lower string) bool {
@@ -543,6 +562,13 @@ func NormalizeDaemonReason(reason, rawError string) Reason {
 	// flaky provider. Upgrading here makes the retry work the moment the server
 	// deploys, without waiting on the daemon fleet.
 	lowerError := strings.ToLower(strings.TrimSpace(rawError))
+	// Normalize before retry eligibility is evaluated so installed daemons
+	// receive the same bounded, resume-safe recovery as current ones. Retain
+	// Classify's precedence if a more specific provider failure is present.
+	if legacyCursorProviderNetworkReasons[reason] &&
+		isCursorProviderNetworkError(lowerError) && Classify(rawError) == ReasonAgentProviderNetwork {
+		return ReasonAgentProviderNetwork
+	}
 	if legacyOpencodeStreamEndedReasons[reason] &&
 		(strings.HasPrefix(lowerError, opencodeStreamEndedPrefix) ||
 			strings.HasPrefix(lowerError, codeartsStreamEndedPrefix)) {
