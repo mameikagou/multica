@@ -77,6 +77,15 @@ func Classify(rawError string) Reason {
 		return ReasonAgentUnknown
 	}
 	lower := strings.ToLower(trimmed)
+	// Cursor's adapter adds event counts to known transport failures. Those
+	// numbers are not HTTP status codes (event_count=429 is not a rate limit).
+	// Apply the existing precedence to the provider stderr, keeping real auth
+	// or quota evidence there while excluding the adapter's diagnostics.
+	if isCursorProviderNetworkError(lower) {
+		if stderr, wrapped := cursorProviderStderr(lower); wrapped {
+			lower = stderr
+		}
+	}
 
 	switch {
 	// A concurrent-request rejection can contain both "access token" and HTTP
@@ -439,13 +448,8 @@ var legacyEnvironmentPrepareWitnesses = []string{
 // secondary error must not hide the network evidence in stderr. Do not match
 // transport phrases globally: local tool or MCP failures are not provider evidence.
 func isCursorProviderNetworkError(lower string) bool {
-	if strings.HasPrefix(lower, "cursor-agent exited with error: ") ||
-		strings.HasPrefix(lower, "cursor-agent prompt write failed: ") {
-		_, stderr, ok := strings.Cut(lower, "; cursor stderr: ")
-		if !ok {
-			return false
-		}
-		lower = strings.TrimSpace(stderr)
+	if stderr, wrapped := cursorProviderStderr(lower); wrapped {
+		lower = stderr
 	}
 	if strings.HasPrefix(lower, "error: [unavailable] connect etimedout ") {
 		return true
@@ -458,6 +462,32 @@ func isCursorProviderNetworkError(lower string) bool {
 		return true
 	}
 	return false
+}
+
+func cursorProviderStderr(lower string) (string, bool) {
+	if !strings.HasPrefix(lower, "cursor-agent exited with error: ") &&
+		!strings.HasPrefix(lower, "cursor-agent prompt write failed: ") {
+		return "", false
+	}
+	_, stderr, ok := strings.Cut(lower, "; cursor stderr: ")
+	return strings.TrimSpace(stderr), ok
+}
+
+// Refined status buckets can also be stale when an old daemon matched a
+// diagnostic count. Require both the known wrapper and the same classification
+// from its header; a bare message or a genuinely refined reason stays intact.
+func cursorDiagnosticReason(reason, lower string) bool {
+	switch Reason(reason) {
+	case ReasonAgentProviderAuthOrAccess, ReasonAgentProviderQuotaLimit,
+		ReasonAgentProviderCapacityOrRateLimit, ReasonAgentProviderServerError:
+	default:
+		return false
+	}
+	if _, wrapped := cursorProviderStderr(lower); !wrapped {
+		return false
+	}
+	header, _, _ := strings.Cut(lower, "; cursor stderr: ")
+	return strings.Contains(header, " (result_seen=false, ") && Classify(header) == Reason(reason)
 }
 
 // Older daemons report these Cursor transport failures as process_failure
@@ -565,7 +595,7 @@ func NormalizeDaemonReason(reason, rawError string) Reason {
 	// Normalize before retry eligibility is evaluated so installed daemons
 	// receive the same bounded, resume-safe recovery as current ones. Retain
 	// Classify's precedence if a more specific provider failure is present.
-	if legacyCursorProviderNetworkReasons[reason] &&
+	if (legacyCursorProviderNetworkReasons[reason] || cursorDiagnosticReason(reason, lowerError)) &&
 		isCursorProviderNetworkError(lowerError) && Classify(rawError) == ReasonAgentProviderNetwork {
 		return ReasonAgentProviderNetwork
 	}

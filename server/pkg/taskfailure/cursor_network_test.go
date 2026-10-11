@@ -1,6 +1,7 @@
 package taskfailure
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,21 @@ func TestClassifyCursorConnectTimeout(t *testing.T) {
 		}
 		if got := NormalizeDaemonReason(ReasonAgentProcessFailure.String(), input); got != ReasonAgentProviderNetwork {
 			t.Errorf("NormalizeDaemonReason(process_failure, %q) = %s, want %s", input, got, ReasonAgentProviderNetwork)
+		}
+	}
+}
+
+func TestCursorTransportDiagnosticCountsAreNotHTTPStatus(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{401, 402, 403, 429, 500, 529, 599} {
+		raw := fmt.Sprintf("cursor-agent exited with error: exit status 1 (result_seen=false, exit_code=1, scanner_error=false, event_count=%d, invalid_event_count=0, last_event_type=system); actions completed before finalization may already have taken effect; cursor stderr: RetriableError: Connection stalled", count)
+		if got := Classify(raw); got != ReasonAgentProviderNetwork {
+			t.Errorf("event_count=%d classified as %s, want provider_network", count, got)
+		}
+		header, _, _ := strings.Cut(raw, "; cursor stderr: ")
+		legacy := Classify(header)
+		if got := NormalizeDaemonReason(legacy.String(), raw); got != ReasonAgentProviderNetwork {
+			t.Errorf("event_count=%d: NormalizeDaemonReason(%s) = %s, want provider_network", count, legacy, got)
 		}
 	}
 }
@@ -90,6 +106,10 @@ func TestCursorConnectionStalledScope(t *testing.T) {
 	for _, reason := range []Reason{ReasonAgentProviderAuthOrAccess, ReasonAgentProviderQuotaLimit, ReasonAgentContextOverflow, ReasonAgentTimeout} {
 		if got := NormalizeDaemonReason(reason.String(), "RetriableError: Connection stalled"); got != reason {
 			t.Errorf("NormalizeDaemonReason(%s, stalled) = %s, want it preserved", reason, got)
+		}
+		wrapped := "cursor-agent exited with error: exit status 1; cursor stderr: RetriableError: Connection stalled"
+		if got := NormalizeDaemonReason(reason.String(), wrapped); got != reason {
+			t.Errorf("NormalizeDaemonReason(%s, wrapped stalled without diagnostic count) = %s, want it preserved", reason, got)
 		}
 	}
 }
