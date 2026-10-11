@@ -62,6 +62,7 @@ func TestClassifyCursorConnectionStalled(t *testing.T) {
 		"RetriableError: Connection stalled",
 		"RetriableError: Connection stalled repeatedly",
 		"RetriableError: Connection stalled\n    at transport (/cursor/index.js:1:1)",
+		"RetriableError: Connection stalled\n    at transport (/cursor/index.js:500:403)",
 	} {
 		for _, input := range []string{
 			stderr,
@@ -102,6 +103,10 @@ func TestCursorConnectionStalledScope(t *testing.T) {
 		if got := NormalizeDaemonReason(ReasonAgentProcessFailure.String(), input); got != ReasonAgentProcessFailure {
 			t.Errorf("NormalizeDaemonReason(process_failure, %q) = %s, want it preserved", input, got)
 		}
+	}
+	stack := "RetriableError: Connection stalled\n    at transport (/cursor/index.js:500:403)"
+	if got := NormalizeDaemonReason(ReasonAgentProviderAuthOrAccess.String(), stack); got != ReasonAgentProviderNetwork {
+		t.Errorf("NormalizeDaemonReason(auth, stalled with diagnostic stack location) = %s, want provider_network", got)
 	}
 	for _, reason := range []Reason{ReasonAgentProviderAuthOrAccess, ReasonAgentProviderQuotaLimit, ReasonAgentContextOverflow, ReasonAgentTimeout} {
 		if got := NormalizeDaemonReason(reason.String(), "RetriableError: Connection stalled"); got != reason {

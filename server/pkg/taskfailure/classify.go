@@ -85,6 +85,15 @@ func Classify(rawError string) Reason {
 		if stderr, wrapped := cursorProviderStderr(lower); wrapped {
 			lower = stderr
 		}
+		// Node stack locations such as index.js:500:403 are not HTTP codes
+		// either. Keep non-frame error lines, including actual provider errors.
+		lines := strings.Split(lower, "\n")
+		for i, line := range lines {
+			if cursorStackFrame(line) {
+				lines[i] = ""
+			}
+		}
+		lower = strings.Join(lines, "\n")
 	}
 
 	switch {
@@ -473,9 +482,14 @@ func cursorProviderStderr(lower string) (string, bool) {
 	return strings.TrimSpace(stderr), ok
 }
 
-// Refined status buckets can also be stale when an old daemon matched a
-// diagnostic count. Require both the known wrapper and the same classification
-// from its header; a bare message or a genuinely refined reason stays intact.
+func cursorStackFrame(line string) bool {
+	return (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) &&
+		strings.HasPrefix(strings.TrimSpace(line), "at ")
+}
+
+// Refined status buckets can also be stale when an old daemon matched a count
+// or stack location. Require the same classification from that diagnostic text;
+// a plain transport message or a genuinely refined reason stays intact.
 func cursorDiagnosticReason(reason, lower string) bool {
 	switch Reason(reason) {
 	case ReasonAgentProviderAuthOrAccess, ReasonAgentProviderQuotaLimit,
@@ -483,11 +497,19 @@ func cursorDiagnosticReason(reason, lower string) bool {
 	default:
 		return false
 	}
-	if _, wrapped := cursorProviderStderr(lower); !wrapped {
-		return false
+	var diagnostics []string
+	if _, wrapped := cursorProviderStderr(lower); wrapped {
+		header, _, _ := strings.Cut(lower, "; cursor stderr: ")
+		if strings.Contains(header, " (result_seen=false, ") {
+			diagnostics = append(diagnostics, header)
+		}
 	}
-	header, _, _ := strings.Cut(lower, "; cursor stderr: ")
-	return strings.Contains(header, " (result_seen=false, ") && Classify(header) == Reason(reason)
+	for _, line := range strings.Split(lower, "\n") {
+		if cursorStackFrame(line) {
+			diagnostics = append(diagnostics, line)
+		}
+	}
+	return len(diagnostics) > 0 && Classify(strings.Join(diagnostics, "\n")) == Reason(reason)
 }
 
 // Older daemons report these Cursor transport failures as process_failure
