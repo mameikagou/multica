@@ -1509,6 +1509,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := agent.ValidateCustomArgs(runtime.Provider, req.CustomArgs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if runtime.Provider == "qoder_cloud" {
 		raw, _ := json.Marshal(req.RuntimeConfig)
 		if err := validateQoderAgentConfig(raw); err != nil {
@@ -2097,6 +2101,21 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			provider, ok = h.resolveAgentProvider(r, existing.WorkspaceID, targetRuntimeID)
 			if !ok {
 				writeError(w, 400, "cannot resolve agent runtime")
+				return
+			}
+		}
+		if req.CustomArgs != nil || req.RuntimeID != nil {
+			var customArgs []string
+			if req.CustomArgs != nil {
+				customArgs = *req.CustomArgs
+			} else if len(existing.CustomArgs) > 0 {
+				if err := json.Unmarshal(existing.CustomArgs, &customArgs); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to read existing custom_args")
+					return
+				}
+			}
+			if err := agent.ValidateCustomArgs(provider, customArgs); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 		}

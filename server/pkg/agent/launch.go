@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -455,6 +456,8 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 	"hermes":      hermesBlockedArgs,
 	"kimi":        kimiBlockedArgs,
 	"kiro":        kiroBlockedArgs,
+	"mcode":       mcodeBlockedArgs,
+	"muse":        museBlockedArgs,
 	"opencode":    opencodeBlockedArgs,
 	"openclaw":    openclawBlockedArgs,
 	"pi":          piBlockedArgs,
@@ -467,6 +470,24 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 	"dim":         dimBlockedArgs,
 	"devin":       devinBlockedArgs,
 	"zeroclaw":    zeroclawBlockedArgs,
+}
+
+// ValidateCustomArgs 使用执行端的参数规则，让保存时即可发现必定被丢弃的参数。
+func ValidateCustomArgs(agentType string, args []string) error {
+	if family, ok := RuntimeProtocolFamily(agentType); ok {
+		agentType = family
+	}
+	blocked := launchPrefixBlockedArgs[agentType]
+	for _, arg := range args {
+		flag := unshellQuoteArg(arg)
+		if idx := strings.Index(flag, "="); idx > 0 {
+			flag = flag[:idx]
+		}
+		if _, ok := blocked[flag]; ok {
+			return fmt.Errorf("custom_args: %q is managed by Multica for runtime %q and cannot be overridden; remove it from custom_args", flag, agentType)
+		}
+	}
+	return nil
 }
 
 // FilterLaunchPrefix is the exported form for callers outside this package —

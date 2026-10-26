@@ -22,6 +22,41 @@ func prefixIndex(argv, want []string) int {
 	return -1
 }
 
+func TestValidateCustomArgs(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		provider string
+		args     []string
+		flag     string
+	}{
+		{"permission mode", "claude", []string{"--permission-mode", "dontAsk"}, "--permission-mode"},
+		{"inline permission mode", "claude", []string{"--permission-mode='dontAsk'"}, "--permission-mode"},
+		{"quoted permission mode", "claude", []string{"\"--permission-mode=dontAsk\""}, "--permission-mode"},
+		{"protocol flag", "codex", []string{"--listen", "ws://localhost:1234"}, "--listen"},
+		{"builtin alias", "omp", []string{"--mode", "rpc"}, "--mode"},
+		{"blocked subcommand", "mcode", []string{"login"}, "login"},
+		{"wire permission mode", "muse", []string{"--yolo"}, "--yolo"},
+		{"allowed flags", "claude", []string{"--tools", "Bash", "--allowedTools", "Bash(multica issue *)"}, ""},
+		{"other provider", "codex", []string{"--permission-mode", "dontAsk"}, ""},
+		{"unknown provider", "custom", []string{"--permission-mode", "dontAsk"}, ""},
+		{"empty args", "claude", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateCustomArgs(tc.provider, tc.args)
+			if tc.flag == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.flag) {
+				t.Fatalf("error = %v, want rejection naming %q", err, tc.flag)
+			}
+		})
+	}
+}
+
 // TestLaunchPrefixPrecedesProtocolFlags is GH #7046 in one assertion. `ccms
 // start q36` only reaches the real Claude binary after its `start` subcommand
 // is selected, so a `-p` that arrives first is parsed by the wrapper, which
@@ -98,6 +133,24 @@ func TestFilterLaunchPrefixKeepsSubcommandsDropsProtocolFlags(t *testing.T) {
 
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("filterLaunchPrefix = %v, want %v", got, want)
+	}
+}
+
+func TestFilterLaunchPrefixMcodeAndMuse(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		provider string
+		prefix   []string
+		want     []string
+	}{
+		{"mcode", []string{"acp", "--region", "test-region"}, []string{"acp"}},
+		{"muse", []string{"serve", "--yolo"}, []string{"serve"}},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			if got := FilterLaunchPrefix(tc.provider, tc.prefix, slog.Default()); !slices.Equal(got, tc.want) {
+				t.Fatalf("prefix = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
