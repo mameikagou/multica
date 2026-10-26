@@ -133,7 +133,14 @@ func NewClient(baseURL string) *Client {
 
 func cloneDefaultTransport() http.RoundTripper {
 	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
-		return transport.Clone()
+		cloned := transport.Clone()
+		if cloned.HTTP2 == nil {
+			cloned.HTTP2 = &http.HTTP2Config{}
+		}
+		// WebSocket 心跳正常时也必须检测 HTTP 连接；请求超时只会取消单个 HTTP/2 流。
+		cloned.HTTP2.SendPingTimeout = 15 * time.Second
+		cloned.HTTP2.PingTimeout = 10 * time.Second
+		return cloned
 	}
 	return http.DefaultTransport
 }
