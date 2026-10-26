@@ -3,6 +3,7 @@ import type { Issue, IssueReaction, TimelineEntry } from "@multica/core/types";
 import { describe, expect, it, vi } from "vitest";
 
 import { issueKeys } from "@/data/queries/issue-keys";
+import { CommentSchema, EMPTY_COMMENT } from "@/data/schemas";
 import {
   addCommentReaction,
   addIssueReaction,
@@ -322,6 +323,13 @@ describe("mobile issue revision gates", () => {
 // comment:updated. The snapshot must keep deleted_at, or the card would render
 // an empty comment instead of the placeholder.
 describe("commentToTimelineEntry", () => {
+  it("carries saved mention outcomes through parsing and realtime updates", () => {
+    const blocked = { target_type: "agent", target_id: "agent-1", status: "blocked", reason_code: "invocation_not_allowed" };
+    const comment = CommentSchema.parse({ ...EMPTY_COMMENT, id: "comment-1", trigger_outcomes: [blocked, null] });
+    expect(commentToTimelineEntry(comment).trigger_outcomes).toEqual([blocked]);
+    expect(commentToTimelineEntry({ ...comment, trigger_outcomes: [] }).trigger_outcomes).toEqual([]);
+  });
+
   it("carries the tombstone marker through a comment snapshot", () => {
     const entry = commentToTimelineEntry({
       id: "comment-1",

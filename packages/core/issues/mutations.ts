@@ -861,18 +861,24 @@ export function useCreateComment(issueId: string) {
         created_at: comment.created_at,
         updated_at: comment.updated_at,
         supplements: comment.supplements,
+        trigger_outcomes: comment.trigger_outcomes,
+        revision: comment.revision,
       };
       const steered = !!comment.supplements?.length;
-      // Dedupe by id: the `comment:created` WS event may have already added
-      // this entry from the broadcast path before this onSuccess fires. Skip
-      // the append if the entry is already in the cache — but keep the
-      // steering receipts, which that broadcast predates.
+      // 创建广播可能早于提及处理结果，回复到达时补齐同一次提交的结果。
       qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
         if (!old) return [entry];
         if (old.some((e) => e.id === entry.id)) {
-          return steered
-            ? old.map((e) => (e.id === entry.id && !e.supplements?.length ? { ...e, supplements: entry.supplements } : e))
-            : old;
+          return old.map((existing) => {
+            if (existing.id !== entry.id) return existing;
+            if (existing.revision !== undefined && (entry.revision === undefined || existing.revision > entry.revision)) return existing;
+            return {
+              ...existing,
+              revision: entry.revision,
+              trigger_outcomes: entry.trigger_outcomes,
+              supplements: existing.supplements?.length ? existing.supplements : entry.supplements,
+            };
+          });
         }
         return sortTimelineEntriesAsc([...old, entry]);
       });
@@ -919,7 +925,7 @@ export function useUpdateComment(issueId: string) {
       qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) =>
         old?.map((e) =>
           e.id === commentId
-            ? { ...e, content, attachments: e.attachments?.filter((a) => kept.has(a.id)) }
+            ? { ...e, content, trigger_outcomes: e.content === content ? e.trigger_outcomes : undefined, attachments: e.attachments?.filter((a) => kept.has(a.id)) }
             : e,
         ),
       );

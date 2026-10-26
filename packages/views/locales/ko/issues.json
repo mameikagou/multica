@@ -542,6 +542,7 @@
     "wakeup_chip_system": "시스템 규칙"
   },
   "comment": {
+    "trigger_not_started_on_submission": "제출 시 시작되지 않음",
     "add_reaction": "반응 추가",
     "collapse_thread": "스레드 접기",
     "expand_thread": "스레드 펼치기",

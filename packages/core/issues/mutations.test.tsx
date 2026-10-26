@@ -1473,6 +1473,8 @@ describe("useCreateComment — sibling caches under a shared key prefix", () => 
         resolved_by_type: null,
         resolved_by_id: null,
         issue_revision: 7,
+        revision: 2,
+        trigger_outcomes: [{ target_type: "agent", target_id: "agent-1", status: "blocked", reason_code: "invocation_not_allowed" }],
       }),
     } as unknown as ApiClient);
   });
@@ -1480,6 +1482,23 @@ describe("useCreateComment — sibling caches under a shared key prefix", () => 
   afterEach(() => {
     qc.clear();
     vi.restoreAllMocks();
+  });
+
+  it.each([1, 3])("merges creation receipts only when the cached comment is not newer (%i)", async (revision) => {
+    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID), [{
+      type: "comment", id: "comment-1", actor_type: "member", actor_id: "user-1",
+      created_at: "2026-08-19T00:00:00Z", content: "hello", revision,
+    }]);
+    const { result } = renderHook(() => useCreateComment(ISSUE_ID), { wrapper: createWrapper(qc) });
+    await act(async () => { await result.current.mutateAsync({ content: "hello" }); });
+    const saved = qc.getQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID))?.[0];
+    if (revision === 1) {
+      expect(saved?.trigger_outcomes).toEqual([{ target_type: "agent", target_id: "agent-1", status: "blocked", reason_code: "invocation_not_allowed" }]);
+      expect(saved?.revision).toBe(2);
+    } else {
+      expect(saved?.trigger_outcomes).toBeUndefined();
+      expect(saved?.revision).toBe(3);
+    }
   });
 
   it("appends the created comment even when non-row table caches are loaded", async () => {

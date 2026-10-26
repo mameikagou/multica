@@ -33,6 +33,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import type { Reaction, TimelineEntry } from "@multica/core/types";
+import { mentionLabelsByTarget, unhandledCommentTriggerOutcomes } from "@multica/core/issues/comment-trigger-outcomes";
 import {
   commentLandingTarget,
   isDeletedComment,
@@ -407,6 +408,28 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
   );
 }
 
+function CommentTriggerWarnings({ entry }: { entry: TimelineEntry }) {
+  const { t } = useT("issues");
+  const blocked = unhandledCommentTriggerOutcomes(entry.trigger_outcomes);
+  if (blocked.length === 0) return null;
+  const labels = mentionLabelsByTarget(entry.content ?? "");
+  return (
+    <View className="gap-1">
+      <Text className="text-xs text-muted-foreground">{t("trigger_warning.submitted")}</Text>
+      {blocked.map((outcome) => (
+        <Text key={`${outcome.target_type}:${outcome.target_id}`} className="text-xs text-destructive">
+          {[
+            labels.get(`${outcome.target_type}:${outcome.target_id}`),
+            outcome.reason_code === "invocation_not_allowed"
+              ? t("trigger_warning.not_allowed")
+              : t("trigger_warning.not_started"),
+          ].filter(Boolean).join(" · ")}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
 function CommentBody({
   entry,
   issueId,
@@ -554,6 +577,7 @@ function CommentBody({
           selectable={isSelecting}
         />
       ) : null}
+      <CommentTriggerWarnings entry={entry} />
       <CommentAttachmentList
         attachments={entry.attachments}
         content={entry.content}

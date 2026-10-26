@@ -1,4 +1,9 @@
 {
+  "trigger_warning": {
+    "submitted": "本次提交时未触发",
+    "not_allowed": "目标未找到或未获授权",
+    "not_started": "提及未触发"
+  },
   "tabs": {
     "all": "全部",
     "created": "我创建的",

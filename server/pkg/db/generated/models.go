@@ -622,6 +622,8 @@ type Comment struct {
 	RecoverySettledAt  pgtype.Timestamptz `json:"recovery_settled_at"`
 	DeletedAt          pgtype.Timestamptz `json:"deleted_at"`
 	SuppressedAgentIds []pgtype.UUID      `json:"suppressed_agent_ids"`
+	TriggerOutcomes    []byte             `json:"trigger_outcomes"`
+	TriggerAttemptID   pgtype.UUID        `json:"trigger_attempt_id"`
 }
 
 type CommentReaction struct {

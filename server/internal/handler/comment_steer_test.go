@@ -283,6 +283,7 @@ func TestUpdateCommentKeepsTheLatestEditsSuppression(t *testing.T) {
 	h := *testHandler
 	h.Bus = events.New()
 	laterContent := agentMention("A", f.agentID) + " latest edit"
+	var latest CommentResponse
 	nested := false
 	h.Bus.Subscribe(protocol.EventCommentUpdated, func(events.Event) {
 		if nested {
@@ -293,7 +294,7 @@ func TestUpdateCommentKeepsTheLatestEditsSuppression(t *testing.T) {
 		later := withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 			"content": laterContent, "expected_revision": 2, "suppress_agent_ids": []string{},
 		}), "commentId", commentID)
-		testutil.Call(t, h.UpdateComment, later).Want(http.StatusOK)
+		testutil.Call(t, h.UpdateComment, later).Want(http.StatusOK).JSON(&latest)
 	})
 	first := withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 		"content": agentMention("A", f.agentID) + " first edit", "expected_revision": 1, "suppress_agent_ids": []string{f.agentID},
@@ -303,7 +304,7 @@ func TestUpdateCommentKeepsTheLatestEditsSuppression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Content != laterContent || saved.Revision != 3 {
+	if saved.Content != laterContent || saved.Revision != latest.Revision {
 		t.Fatalf("latest body/revision = %q/%d", saved.Content, saved.Revision)
 	}
 	if len(saved.SuppressedAgentIds) != 0 {

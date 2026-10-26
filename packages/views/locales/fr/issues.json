@@ -555,6 +555,7 @@
     "wakeup_chip_system": "Règle système"
   },
   "comment": {
+    "trigger_not_started_on_submission": "Non déclenché lors de l’envoi",
     "add_reaction": "Ajouter une réaction",
     "collapse_thread": "Replier le fil",
     "expand_thread": "Développer le fil",

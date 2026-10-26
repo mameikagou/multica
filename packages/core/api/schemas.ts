@@ -1056,6 +1056,19 @@ const CommentSupplementReceiptsSchema = z.array(z.unknown()).optional().catch(un
     return parsed.success ? [parsed.data] : [];
   }));
 
+export const CommentTriggerOutcomeSchema = z.object({
+  target_type: z.string().default(""),
+  target_id: z.string(),
+  status: z.string().default(""),
+  reason_code: z.string().default(""),
+}).loose();
+
+export const CommentTriggerOutcomesSchema = z.array(z.unknown()).catch([]).default([])
+  .transform((items) => items.flatMap((item) => {
+    const parsed = CommentTriggerOutcomeSchema.safeParse(item);
+    return parsed.success ? [parsed.data] : [];
+  }));
+
 const TimelineEntrySchema = z.object({
   type: z.string(),
   id: z.string(),
@@ -1075,6 +1088,7 @@ const TimelineEntrySchema = z.object({
   attachments: z.array(AttachmentSchema).optional(),
   source_task_id: z.string().nullable().optional(),
   supplements: CommentSupplementReceiptsSchema,
+  trigger_outcomes: CommentTriggerOutcomesSchema.optional(),
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
   supplement_failure_reason: z.string().optional().catch(undefined),
@@ -1227,6 +1241,7 @@ export const CommentSchema = z.object({
   revision: z.number().int().positive().optional(),
   source_task_id: z.string().nullable().optional(),
   supplements: CommentSupplementReceiptsSchema,
+  trigger_outcomes: CommentTriggerOutcomesSchema.optional(),
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
   supplement_failure_reason: z.string().optional().catch(undefined),
@@ -1266,31 +1281,12 @@ const CommentTriggerPreviewAgentSchema = z.object({
   reason: z.string().default(""),
 }).loose();
 
-// Per-target outcome of an explicit @agent / @squad mention (MUL-4525 §2).
-// target_id is required to correlate with the client's rendered mention; a
-// malformed entry (missing id) is dropped rather than failing the whole payload.
-export const CommentTriggerOutcomeSchema = z.object({
-  target_type: z.string().default(""),
-  target_id: z.string(),
-  status: z.string().default(""),
-  reason_code: z.string().default(""),
-}).loose();
-
 export const CommentTriggerPreviewSchema = z.object({
   agents: z.array(CommentTriggerPreviewAgentSchema).default([]),
   // Drop malformed blocked entries INDIVIDUALLY (MUL-4525): a single bad item
   // must not discard the whole set of valid blocked mentions. A non-array
   // degrades to []; each valid entry is kept, each malformed one dropped.
-  blocked: z
-    .array(z.unknown())
-    .catch([])
-    .default([])
-    .transform((items) =>
-      items.flatMap((item) => {
-        const parsed = CommentTriggerOutcomeSchema.safeParse(item);
-        return parsed.success ? [parsed.data] : [];
-      }),
-    ),
+  blocked: CommentTriggerOutcomesSchema,
 }).loose();
 
 const IssueTriggerPreviewItemSchema = z.object({

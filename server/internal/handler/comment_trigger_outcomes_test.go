@@ -6,7 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func findCommentOutcome(t *testing.T, outcomes []CommentTriggerOutcome, targetID string) CommentTriggerOutcome {
@@ -18,6 +24,135 @@ func findCommentOutcome(t *testing.T, outcomes []CommentTriggerOutcome, targetID
 	}
 	t.Fatalf("no trigger outcome for target %s in %+v", targetID, outcomes)
 	return CommentTriggerOutcome{}
+}
+
+func TestCommentTriggerOutcomesPersistAcrossReadsAndEdits(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	privateAgentID, _, readerID := privateAgentTestFixture(t)
+	allowedAgentID := createHandlerTestAgent(t, "Receipt allowed agent", nil)
+	issueID := createCommentTriggerPreviewIssue(t, "persisted mention receipts", "", "")
+	content := fmt.Sprintf("[@Private](mention://agent/%s) [@Allowed](mention://agent/%s)", privateAgentID, allowedAgentID)
+	h := *testHandler
+	h.Bus = events.New()
+	var broadcast CommentResponse
+	for _, eventType := range []string{protocol.EventCommentCreated, protocol.EventCommentUpdated} {
+		h.Bus.Subscribe(eventType, func(event events.Event) {
+			if payload, ok := event.Payload.(map[string]any); ok {
+				if comment, ok := payload["comment"].(CommentResponse); ok && comment.IssueID == issueID {
+					broadcast = comment
+				}
+			}
+		})
+	}
+	var created CommentResponse
+	testutil.Call(t, h.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": content,
+	}), "id", issueID)).Want(http.StatusCreated).JSON(&created)
+	if blocked := findCommentOutcome(t, created.TriggerOutcomes, privateAgentID); blocked.Status != DispatchBlocked {
+		t.Fatalf("private mention = %+v", blocked)
+	}
+	if allowed := findCommentOutcome(t, created.TriggerOutcomes, allowedAgentID); allowed.Status != DispatchQueued {
+		t.Fatalf("allowed mention = %+v", allowed)
+	}
+	if !reflect.DeepEqual(broadcast.TriggerOutcomes, created.TriggerOutcomes) {
+		t.Errorf("broadcast outcomes = %+v, want %+v", broadcast.TriggerOutcomes, created.TriggerOutcomes)
+	}
+	for _, query := range []string{"", "?roots_only=true", "?summary=true", "?thread=" + created.ID} {
+		var comments []CommentResponse
+		testutil.Call(t, h.ListComments, withURLParam(newRequestAs(readerID, http.MethodGet, "/api/issues/"+issueID+"/comments"+query, nil), "id", issueID)).Want(http.StatusOK).JSON(&comments)
+		if len(comments) != 1 || !reflect.DeepEqual(comments[0].TriggerOutcomes, created.TriggerOutcomes) {
+			t.Errorf("read %q outcomes = %+v, want persisted outcomes", query, comments)
+		}
+	}
+	var timeline []TimelineEntry
+	testutil.Call(t, h.ListTimeline, withURLParam(newRequestAs(readerID, http.MethodGet, "/api/issues/"+issueID+"/timeline", nil), "id", issueID)).Want(http.StatusOK).JSON(&timeline)
+	found := false
+	for _, entry := range timeline {
+		if entry.ID == created.ID {
+			found = reflect.DeepEqual(entry.TriggerOutcomes, created.TriggerOutcomes)
+		}
+	}
+	if !found {
+		t.Error("timeline did not retain mention outcomes")
+	}
+	var unchanged CommentResponse
+	testutil.Call(t, h.UpdateComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+created.ID, map[string]any{
+		"content": content,
+	}), "commentId", created.ID)).Want(http.StatusOK).JSON(&unchanged)
+	if !reflect.DeepEqual(unchanged.TriggerOutcomes, created.TriggerOutcomes) {
+		t.Errorf("unchanged edit lost outcomes: %+v", unchanged.TriggerOutcomes)
+	}
+	var updated CommentResponse
+	testutil.Call(t, h.UpdateComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+created.ID, map[string]any{
+		"content": "No handoff needed",
+	}), "commentId", created.ID)).Want(http.StatusOK).JSON(&updated)
+	if len(updated.TriggerOutcomes) != 0 || len(broadcast.TriggerOutcomes) != 0 {
+		t.Errorf("edited comment retained old outcomes: response=%+v broadcast=%+v", updated.TriggerOutcomes, broadcast.TriggerOutcomes)
+	}
+	_, comments := listComments(t, issueID, "")
+	if len(comments) != 1 || len(comments[0].TriggerOutcomes) != 0 {
+		t.Errorf("edited read retained old outcomes: %+v", comments)
+	}
+	testutil.Call(t, h.UpdateComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+created.ID, map[string]any{
+		"content": fmt.Sprintf("[@Allowed](mention://agent/%s) please handle", allowedAgentID),
+	}), "commentId", created.ID)).Want(http.StatusOK).JSON(&updated)
+	if len(updated.TriggerOutcomes) != 1 || updated.TriggerOutcomes[0].Status == DispatchBlocked {
+		t.Errorf("successful edited handoff = %+v", updated.TriggerOutcomes)
+	}
+}
+
+func TestCommentTriggerOutcomesFollowContentAttempt(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	for _, change := range []string{"metadata", "unchanged", "edited", "edited back", "deleted"} {
+		t.Run(change, func(t *testing.T) {
+			issueID := createCommentTriggerPreviewIssue(t, "receipt race "+change, "", "")
+			commentID := dbfx.Comment(t, issueID, "original content")
+			initial, err := testHandler.Queries.GetComment(ctx, parseUUID(commentID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch change {
+			case "metadata":
+				_, err = testHandler.Queries.BumpCommentRevision(ctx, db.BumpCommentRevisionParams{ID: initial.ID, WorkspaceID: initial.WorkspaceID})
+			case "unchanged":
+				_, err = testHandler.Queries.UpdateComment(ctx, db.UpdateCommentParams{ID: initial.ID, Content: initial.Content})
+			case "edited", "edited back":
+				_, err = testHandler.Queries.UpdateComment(ctx, db.UpdateCommentParams{ID: initial.ID, Content: "new content"})
+				if err == nil && change == "edited back" {
+					_, err = testHandler.Queries.UpdateComment(ctx, db.UpdateCommentParams{ID: initial.ID, Content: initial.Content})
+				}
+			case "deleted":
+				_, err = testHandler.Queries.TombstoneComment(ctx, db.TombstoneCommentParams{ID: initial.ID, WorkspaceID: initial.WorkspaceID})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := *testHandler
+			h.Bus = events.New()
+			broadcasts := 0
+			h.Bus.Subscribe(protocol.EventCommentUpdated, func(events.Event) { broadcasts++ })
+			outcomes := []CommentTriggerOutcome{{TargetType: "agent", TargetID: "00000000-0000-0000-0000-0000000000ff", Status: DispatchBlocked, ReasonCode: ReasonInvocationNotAllowed}}
+			saved := h.saveCommentTriggerOutcomes(ctx, initial, outcomes)
+			h.commentTriggerResponse(newRequest(http.MethodPost, "/", nil), commentToResponse(initial, nil, nil), saved, outcomes, "member", testUserID)
+			current, err := h.Queries.GetComment(ctx, initial.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSaved := change == "metadata" || change == "unchanged"
+			if wantSaved {
+				if !reflect.DeepEqual(storedCommentTriggerOutcomes(current), outcomes) || broadcasts != 1 {
+					t.Errorf("receipt was lost: outcomes=%+v broadcasts=%d", storedCommentTriggerOutcomes(current), broadcasts)
+				}
+			} else if len(storedCommentTriggerOutcomes(current)) != 0 || broadcasts != 0 {
+				t.Errorf("stale receipt was saved or broadcast: outcomes=%+v broadcasts=%d", storedCommentTriggerOutcomes(current), broadcasts)
+			}
+		})
+	}
 }
 
 // TestCreateComment_MixedMentionSurfacesPartialTriggerOutcomes is the MUL-4525 §2
@@ -125,6 +260,14 @@ func TestCreateComment_BlockedMentionReasonDoesNotEnumeratePrivateAgent(t *testi
 		if b.ReasonCode != ReasonInvocationNotAllowed {
 			t.Errorf("blocked %s reason = %q, want invocation_not_allowed (must not distinguish private-exists from not-found)", b.TargetID, b.ReasonCode)
 		}
+	}
+	var created CommentResponse
+	testutil.Call(t, testHandler.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": content,
+	}), "id", issueID)).Want(http.StatusCreated).JSON(&created)
+	_, comments := listComments(t, issueID, "")
+	if len(comments) != 1 || !reflect.DeepEqual(comments[0].TriggerOutcomes, preview.Blocked) {
+		t.Errorf("saved outcomes disclose different results: %+v", comments)
 	}
 }
 

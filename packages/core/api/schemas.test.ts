@@ -542,6 +542,14 @@ describe("IssueTriggerPreviewSchema", () => {
 });
 
 describe("TimelineEntriesSchema", () => {
+  it("keeps saved mention outcomes while dropping malformed entries individually", () => {
+    const blocked = { target_type: "agent", target_id: "agent-1", status: "blocked", reason_code: "invocation_not_allowed" };
+    const entry = { type: "comment", id: "comment-1", actor_type: "member", actor_id: "user-1", created_at: "2026-01-01T00:00:00Z" };
+    expect(TimelineEntriesSchema.parse([{ ...entry, trigger_outcomes: [blocked, null, { status: "blocked" }] }])[0]?.trigger_outcomes).toEqual([blocked]);
+    expect(TimelineEntriesSchema.parse([{ ...entry, trigger_outcomes: "invalid" }])[0]?.trigger_outcomes).toEqual([]);
+    expect(TimelineEntriesSchema.parse([entry])[0]?.trigger_outcomes).toEqual([]);
+  });
+
   it("preserves run-bound supplement delivery receipts", () => {
     const parsed = TimelineEntriesSchema.parse([{
       type: "comment",

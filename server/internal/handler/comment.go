@@ -76,12 +76,7 @@ type CommentResponse struct {
 	// pulls the folded comments back with `comment list --full`.
 	ThreadResolved *bool `json:"thread_resolved,omitempty"`
 	FoldedCount    *int  `json:"folded_count,omitempty"`
-	// TriggerOutcomes is the per-target result of every EXPLICIT @agent / @squad
-	// mention in this comment (MUL-4525 §2). It is additive and populated only on
-	// create/edit responses: old clients ignore it. A saved comment whose mention
-	// was blocked (no invoke permission, target unavailable, runtime offline) now
-	// reports that here instead of silently dropping the trigger, so the client
-	// can show "comment posted, but N targets were not triggered".
+	// TriggerOutcomes 保存本次内容提交时的结果，供后续读者查看当时未触发的原因。
 	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
 	// Supplements lists every running turn this comment steered, one receipt
 	// per run. The single supplement_* fields mirror the first receipt for
@@ -113,25 +108,36 @@ func commentToResponse(c db.Comment, reactions []ReactionResponse, attachments [
 		attachments = []AttachmentResponse{}
 	}
 	return CommentResponse{
-		ID:             uuidToString(c.ID),
-		IssueID:        uuidToString(c.IssueID),
-		AuthorType:     c.AuthorType,
-		AuthorID:       uuidToString(c.AuthorID),
-		Content:        c.Content,
-		Type:           c.Type,
-		ParentID:       uuidToPtr(c.ParentID),
-		CreatedAt:      timestampToString(c.CreatedAt),
-		UpdatedAt:      timestampToString(c.UpdatedAt),
-		Revision:       c.Revision,
-		ResolvedAt:     timestampToPtr(c.ResolvedAt),
-		ResolvedByType: textToPtr(c.ResolvedByType),
-		ResolvedByID:   uuidToPtr(c.ResolvedByID),
-		SourceTaskID:   uuidToPtr(c.SourceTaskID),
-		DeletedAt:      timestampToPtr(c.DeletedAt),
-		QuickActionID:  uuidToPtr(c.QuickActionID),
-		Reactions:      reactions,
-		Attachments:    attachments,
+		ID:              uuidToString(c.ID),
+		IssueID:         uuidToString(c.IssueID),
+		AuthorType:      c.AuthorType,
+		AuthorID:        uuidToString(c.AuthorID),
+		Content:         c.Content,
+		Type:            c.Type,
+		ParentID:        uuidToPtr(c.ParentID),
+		CreatedAt:       timestampToString(c.CreatedAt),
+		UpdatedAt:       timestampToString(c.UpdatedAt),
+		Revision:        c.Revision,
+		ResolvedAt:      timestampToPtr(c.ResolvedAt),
+		ResolvedByType:  textToPtr(c.ResolvedByType),
+		ResolvedByID:    uuidToPtr(c.ResolvedByID),
+		SourceTaskID:    uuidToPtr(c.SourceTaskID),
+		DeletedAt:       timestampToPtr(c.DeletedAt),
+		QuickActionID:   uuidToPtr(c.QuickActionID),
+		Reactions:       reactions,
+		Attachments:     attachments,
+		TriggerOutcomes: storedCommentTriggerOutcomes(c),
 	}
+}
+
+func storedCommentTriggerOutcomes(comment db.Comment) []CommentTriggerOutcome {
+	var outcomes []CommentTriggerOutcome
+	if len(comment.TriggerOutcomes) > 0 {
+		if err := json.Unmarshal(comment.TriggerOutcomes, &outcomes); err != nil {
+			slog.Warn("decode comment trigger outcomes", "comment_id", uuidToString(comment.ID), "error", err)
+		}
+	}
+	return outcomes
 }
 
 // Shared bound for plugin comments and input sent to a running agent.
@@ -739,23 +745,24 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 			replies := make([]db.Comment, 0, len(rows))
 			for _, r := range rows {
 				c := db.Comment{
-					ID:             r.ID,
-					IssueID:        r.IssueID,
-					AuthorType:     r.AuthorType,
-					AuthorID:       r.AuthorID,
-					Content:        r.Content,
-					Type:           r.Type,
-					CreatedAt:      r.CreatedAt,
-					UpdatedAt:      r.UpdatedAt,
-					ParentID:       r.ParentID,
-					WorkspaceID:    r.WorkspaceID,
-					ResolvedAt:     r.ResolvedAt,
-					ResolvedByType: r.ResolvedByType,
-					ResolvedByID:   r.ResolvedByID,
-					SourceTaskID:   r.SourceTaskID,
-					QuickActionID:  r.QuickActionID,
-					Revision:       r.Revision,
-					DeletedAt:      r.DeletedAt,
+					ID:              r.ID,
+					IssueID:         r.IssueID,
+					AuthorType:      r.AuthorType,
+					AuthorID:        r.AuthorID,
+					Content:         r.Content,
+					Type:            r.Type,
+					CreatedAt:       r.CreatedAt,
+					UpdatedAt:       r.UpdatedAt,
+					ParentID:        r.ParentID,
+					WorkspaceID:     r.WorkspaceID,
+					ResolvedAt:      r.ResolvedAt,
+					ResolvedByType:  r.ResolvedByType,
+					ResolvedByID:    r.ResolvedByID,
+					SourceTaskID:    r.SourceTaskID,
+					QuickActionID:   r.QuickActionID,
+					Revision:        r.Revision,
+					DeletedAt:       r.DeletedAt,
+					TriggerOutcomes: r.TriggerOutcomes,
 				}
 				if !r.ParentID.Valid {
 					root := c
@@ -834,23 +841,24 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 		replies := make([]db.Comment, 0, len(rows))
 		for _, r := range rows {
 			c := db.Comment{
-				ID:             r.ID,
-				IssueID:        r.IssueID,
-				AuthorType:     r.AuthorType,
-				AuthorID:       r.AuthorID,
-				Content:        r.Content,
-				Type:           r.Type,
-				CreatedAt:      r.CreatedAt,
-				UpdatedAt:      r.UpdatedAt,
-				ParentID:       r.ParentID,
-				WorkspaceID:    r.WorkspaceID,
-				ResolvedAt:     r.ResolvedAt,
-				ResolvedByType: r.ResolvedByType,
-				ResolvedByID:   r.ResolvedByID,
-				SourceTaskID:   r.SourceTaskID,
-				QuickActionID:  r.QuickActionID,
-				Revision:       r.Revision,
-				DeletedAt:      r.DeletedAt,
+				ID:              r.ID,
+				IssueID:         r.IssueID,
+				AuthorType:      r.AuthorType,
+				AuthorID:        r.AuthorID,
+				Content:         r.Content,
+				Type:            r.Type,
+				CreatedAt:       r.CreatedAt,
+				UpdatedAt:       r.UpdatedAt,
+				ParentID:        r.ParentID,
+				WorkspaceID:     r.WorkspaceID,
+				ResolvedAt:      r.ResolvedAt,
+				ResolvedByType:  r.ResolvedByType,
+				ResolvedByID:    r.ResolvedByID,
+				SourceTaskID:    r.SourceTaskID,
+				QuickActionID:   r.QuickActionID,
+				Revision:        r.Revision,
+				DeletedAt:       r.DeletedAt,
+				TriggerOutcomes: r.TriggerOutcomes,
 			}
 			if !r.ParentID.Valid {
 				root := c
@@ -923,23 +931,24 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 				continue
 			}
 			comments = append(comments, db.Comment{
-				ID:             r.ID,
-				IssueID:        r.IssueID,
-				AuthorType:     r.AuthorType,
-				AuthorID:       r.AuthorID,
-				Content:        r.Content,
-				Type:           r.Type,
-				CreatedAt:      r.CreatedAt,
-				UpdatedAt:      r.UpdatedAt,
-				ParentID:       r.ParentID,
-				WorkspaceID:    r.WorkspaceID,
-				ResolvedAt:     r.ResolvedAt,
-				ResolvedByType: r.ResolvedByType,
-				ResolvedByID:   r.ResolvedByID,
-				SourceTaskID:   r.SourceTaskID,
-				QuickActionID:  r.QuickActionID,
-				Revision:       r.Revision,
-				DeletedAt:      r.DeletedAt,
+				ID:              r.ID,
+				IssueID:         r.IssueID,
+				AuthorType:      r.AuthorType,
+				AuthorID:        r.AuthorID,
+				Content:         r.Content,
+				Type:            r.Type,
+				CreatedAt:       r.CreatedAt,
+				UpdatedAt:       r.UpdatedAt,
+				ParentID:        r.ParentID,
+				WorkspaceID:     r.WorkspaceID,
+				ResolvedAt:      r.ResolvedAt,
+				ResolvedByType:  r.ResolvedByType,
+				ResolvedByID:    r.ResolvedByID,
+				SourceTaskID:    r.SourceTaskID,
+				QuickActionID:   r.QuickActionID,
+				Revision:        r.Revision,
+				DeletedAt:       r.DeletedAt,
+				TriggerOutcomes: r.TriggerOutcomes,
 			})
 		}
 
@@ -999,7 +1008,7 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 					ParentID: r.ParentID, WorkspaceID: r.WorkspaceID, ResolvedAt: r.ResolvedAt,
 					ResolvedByType: r.ResolvedByType, ResolvedByID: r.ResolvedByID,
 					SourceTaskID: r.SourceTaskID, QuickActionID: r.QuickActionID, Revision: r.Revision,
-					DeletedAt: r.DeletedAt,
+					DeletedAt: r.DeletedAt, TriggerOutcomes: r.TriggerOutcomes,
 				}
 				stats[uuidToString(r.ID)] = rootStat{ReplyCount: int(r.ReplyCount), LastActivityAt: r.LastActivityAt}
 			}
@@ -1030,7 +1039,7 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 				ParentID: r.ParentID, WorkspaceID: r.WorkspaceID, ResolvedAt: r.ResolvedAt,
 				ResolvedByType: r.ResolvedByType, ResolvedByID: r.ResolvedByID,
 				SourceTaskID: r.SourceTaskID, QuickActionID: r.QuickActionID, Revision: r.Revision,
-				DeletedAt: r.DeletedAt,
+				DeletedAt: r.DeletedAt, TriggerOutcomes: r.TriggerOutcomes,
 			}
 			stats[uuidToString(r.ID)] = rootStat{ReplyCount: int(r.ReplyCount), LastActivityAt: r.LastActivityAt}
 		}
@@ -1907,17 +1916,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		"issue_revision":      created.IssueRevision,
 	})
 
-	// A reply in a resolved thread re-opens it. Done after CreateComment commits
-	// so the reply is visible regardless of the unresolve outcome. Shared with
-	// the agent task path (TaskService.createAgentComment) — both reply paths
-	// must keep the resolved root in sync.
 	h.TaskService.AutoUnresolveThreadOnReply(r.Context(), rootComment, uuidToString(issue.WorkspaceID), authorType, authorID, h.wakeupSourceTaskID(r))
-
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
-	// The comment is already saved; a blocked mention must not fail the whole
-	// request. Surface the per-target outcomes so the client can show partial
-	// success instead of a silent no-op (MUL-4525 §2).
-	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steerTaskIDs)
+	comment, outcomes := h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steerTaskIDs)
+	resp = h.commentTriggerResponse(r, resp, comment, outcomes, authorType, authorID)
+
 	if len(steerTaskIDs) > 0 {
 		applyCommentSupplements(&resp, h.listCommentSupplements(r.Context(), issue.WorkspaceID, []pgtype.UUID{comment.ID})[uuidToString(comment.ID)])
 	}
@@ -1964,9 +1967,9 @@ func isNoteComment(content string) bool {
 //
 // steerTaskIDs are the running turns the author chose: a recipient whose chosen
 // turn is still running receives this comment there instead of a follow-up run.
-func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs, steerTaskIDs []pgtype.UUID) []CommentTriggerOutcome {
+func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs, steerTaskIDs []pgtype.UUID) (db.Comment, []CommentTriggerOutcome) {
 	if isNoteComment(comment.Content) {
-		return nil
+		return comment, nil
 	}
 	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
@@ -1980,7 +1983,46 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	for agentID, result := range steered {
 		enqueued[agentID] = result
 	}
-	return commentTriggerOutcomes(targets, enqueued)
+	outcomes := commentTriggerOutcomes(targets, enqueued)
+	return h.saveCommentTriggerOutcomes(ctx, comment, outcomes), outcomes
+}
+
+func (h *Handler) saveCommentTriggerOutcomes(ctx context.Context, comment db.Comment, outcomes []CommentTriggerOutcome) db.Comment {
+	if len(outcomes) == 0 {
+		return comment
+	}
+	raw, err := json.Marshal(outcomes)
+	if err == nil {
+		var saved db.Comment
+		saved, err = h.Queries.SetCommentTriggerOutcomes(ctx, db.SetCommentTriggerOutcomesParams{
+			ID: comment.ID, WorkspaceID: comment.WorkspaceID,
+			TriggerAttemptID: comment.TriggerAttemptID, TriggerOutcomes: raw,
+		})
+		if err == nil {
+			return saved
+		}
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("save comment trigger outcomes", "comment_id", uuidToString(comment.ID), "error", err)
+	}
+	return comment
+}
+
+func (h *Handler) commentTriggerResponse(r *http.Request, before CommentResponse, comment db.Comment, outcomes []CommentTriggerOutcome, actorType, actorID string) CommentResponse {
+	if comment.Revision > before.Revision {
+		ids := []pgtype.UUID{comment.ID}
+		cid := uuidToString(comment.ID)
+		resp := commentToResponse(comment, h.groupReactions(r, ids)[cid], h.groupAttachments(r, ids)[cid])
+		resp.IssueRevision = before.IssueRevision
+		applyCommentSupplements(&resp, h.listCommentSupplements(r.Context(), comment.WorkspaceID, ids)[cid])
+		// 先广播内容，再广播成功保存的结果；过期提交不会覆盖后续编辑或删除。
+		h.publish(protocol.EventCommentUpdated, uuidToString(comment.WorkspaceID), actorType, actorID, map[string]any{"comment": resp})
+		return resp
+	}
+	if outcomes != nil {
+		before.TriggerOutcomes = outcomes
+	}
+	return before
 }
 
 // noteBlockedRuntimeTargets leaves one system comment per agent refused for an
@@ -3532,9 +3574,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update comment")
 		return
 	}
-	retriggerEditedComment := func() []CommentTriggerOutcome {
+	retriggerEditedComment := func() (db.Comment, []CommentTriggerOutcome) {
 		if oldContent == comment.Content {
-			return nil
+			return comment, nil
 		}
 		issue := *triggerIssue
 		var parentComment *db.Comment
@@ -3562,10 +3604,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	h.publish(protocol.EventCommentUpdated, workspaceID, actorType, actorID, eventPayload)
 
-	// The broadcast above intentionally omits trigger_outcomes — it is the
-	// editor's private feedback, not shared timeline state (MUL-4525 §2).
-	resp.TriggerOutcomes = retriggerEditedComment()
-
+	comment, outcomes := retriggerEditedComment()
+	resp = h.commentTriggerResponse(r, resp, comment, outcomes, actorType, actorID)
 	writeJSON(w, http.StatusOK, resp)
 }
 

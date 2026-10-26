@@ -332,7 +332,8 @@ describe("useIssueTimeline", () => {
     expect(cacheUpdates.last).toEqual(queryState.data);
   });
 
-  it("preserves hydrated actor identity when applying a comment update", () => {
+  it("preserves hydrated actor identity and mention outcomes when applying a comment update", () => {
+    const blocked = [{ target_type: "agent", target_id: "agent-1", status: "blocked", reason_code: "invocation_not_allowed" }];
     queryState.data = [
       {
         type: "comment",
@@ -360,6 +361,7 @@ describe("useIssueTimeline", () => {
           author_type: "member",
           author_id: "departed-user",
           content: "after",
+          trigger_outcomes: blocked,
           parent_id: null,
           created_at: "2026-05-06T01:00:00Z",
           updated_at: "2026-05-06T02:00:00Z",
@@ -374,6 +376,7 @@ describe("useIssueTimeline", () => {
     expect(cacheUpdates.last).toMatchObject([
       {
         content: "after",
+        trigger_outcomes: blocked,
         actor_name: "Former Member",
         actor_avatar_url: "https://profiles.example.com/former.png",
       },

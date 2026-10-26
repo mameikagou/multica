@@ -5,7 +5,7 @@ import { ChevronDown, TriangleAlert, Users } from "lucide-react";
 import type { CommentTriggerPreviewAgent, CommentTriggerOutcome } from "@multica/core/types";
 import type { AgentRunState, RecipientAction } from "@multica/core/issues/run-steering";
 import { useAgentPresenceDetail } from "@multica/core/agents";
-import { mentionLabelsByTarget } from "@multica/core/issues/comment-trigger-outcomes";
+import { mentionLabelsByTarget, unhandledCommentTriggerOutcomes } from "@multica/core/issues/comment-trigger-outcomes";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/actor-avatar";
 import { AVATAR_SIZE_PX } from "@multica/ui/lib/avatar-size";
@@ -185,31 +185,55 @@ export function CommentTriggerChips({
   );
 }
 
-// One blocked mention: named like an allowed chip ("Go"), but with an error
-// indicator and a short reason ("Not found or no permission") instead of "will
-// start", so a refused @mention reads as a clear, specific error rather than a
-// vague count.
+export function CommentTriggerWarnings({ outcomes, content = "" }: {
+  outcomes?: CommentTriggerOutcome[];
+  content?: string;
+}) {
+  const { t } = useT("issues");
+  const blocked = unhandledCommentTriggerOutcomes(outcomes);
+  if (blocked.length === 0) return null;
+  const labels = mentionLabelsByTarget(content);
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-micro text-muted-foreground">
+      <span>{t(($) => $.comment.trigger_not_started_on_submission)}</span>
+      {blocked.map((outcome) => (
+        <BlockedTriggerChip
+          key={`${outcome.target_type}:${outcome.target_id}`}
+          outcome={outcome}
+          label={labels.get(`${outcome.target_type}:${outcome.target_id}`)}
+          submitted
+          t={t}
+        />
+      ))}
+    </div>
+  );
+}
+
 function BlockedTriggerChip({
   outcome,
   label,
+  submitted = false,
   t,
 }: {
   outcome: CommentTriggerOutcome;
   label?: string;
+  submitted?: boolean;
   t: IssuesT;
 }) {
   const shortReason = blockedShortReasonLabel(outcome.reason_code, t);
+  let accessibleLabel = shortReason;
+  if (label) {
+    accessibleLabel = submitted
+      ? `${label} · ${shortReason}`
+      : t(($) => $.comment.trigger_blocked_chip_aria, { name: label, reason: shortReason });
+  }
   return (
     <Tooltip>
       <TooltipTrigger
         render={
           <span
             className="inline-flex h-6 min-w-0 max-w-full animate-in fade-in items-center gap-1.5 rounded-md px-1.5 text-micro font-medium text-destructive"
-            aria-label={
-              label
-                ? t(($) => $.comment.trigger_blocked_chip_aria, { name: label, reason: shortReason })
-                : shortReason
-            }
+            aria-label={accessibleLabel}
           >
             <TriangleAlert className="size-3 shrink-0" />
             {label ? (
@@ -225,7 +249,7 @@ function BlockedTriggerChip({
         }
       />
       <TooltipContent side="top" className="max-w-72 text-caption">
-        {blockedReasonLabel(outcome.reason_code, t)}
+        {submitted ? shortReason : blockedReasonLabel(outcome.reason_code, t)}
       </TooltipContent>
     </Tooltip>
   );

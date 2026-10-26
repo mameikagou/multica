@@ -634,6 +634,7 @@ export function commentToTimelineEntry(comment: Comment): TimelineEntry {
     resolved_by_type: comment.resolved_by_type,
     resolved_by_id: comment.resolved_by_id,
     source_task_id: comment.source_task_id,
+    trigger_outcomes: comment.trigger_outcomes,
     revision: comment.revision,
     // A delete tombstones a comment that has replies and announces it as
     // comment:updated; dropping this would render it as an empty comment.

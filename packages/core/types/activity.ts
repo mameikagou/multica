@@ -1,4 +1,4 @@
-import type { CommentAuthorType, CommentSupplementReceipt, Reaction } from "./comment";
+import type { CommentAuthorType, CommentSupplementReceipt, CommentTriggerOutcome, Reaction } from "./comment";
 import type { Attachment } from "./attachment";
 
 export interface AssigneeFrequencyEntry {
@@ -33,6 +33,7 @@ export interface TimelineEntry {
   resolved_by_type?: CommentAuthorType | null;
   resolved_by_id?: string | null;
   source_task_id?: string | null;
+  trigger_outcomes?: CommentTriggerOutcome[];
   /** Every running turn this comment steered, one receipt per run. */
   supplements?: CommentSupplementReceipt[];
   /** Mirrors the first receipt; servers that predate `supplements` send only these. */

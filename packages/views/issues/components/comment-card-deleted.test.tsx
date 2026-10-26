@@ -99,6 +99,19 @@ function renderThread(root: TimelineEntry, replies: TimelineEntry[]) {
 const actionMenus = () => screen.queryAllByRole("button", { name: "Comment actions" });
 
 describe("CommentCard — deleted comments", () => {
+  it("shows saved mention warnings on roots and replies, but hides them on tombstones", () => {
+    const receipt = {
+      content: "[@Review](mention://agent/deadbeef-0001)",
+      trigger_outcomes: [{ target_type: "agent", target_id: "deadbeef-0001", status: "blocked", reason_code: "invocation_not_allowed" }],
+    };
+    renderThread(comment("a", null, receipt), [
+      comment("bb", "a", receipt),
+      comment("ccc", "a", { ...receipt, content: "", deleted_at: DELETED_AT }),
+    ]);
+    expect(screen.getAllByText("Not started on submission")).toHaveLength(2);
+    expect(screen.getAllByText("Not found or no permission")).toHaveLength(2);
+  });
+
   it("renders no row for a deleted reply and keeps the replies to it", () => {
     const { container } = renderThread(comment("a", null), [tombstone("bb", "a"), comment("ccc", "bb")]);
 

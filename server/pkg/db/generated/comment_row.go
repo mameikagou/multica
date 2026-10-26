@@ -24,6 +24,8 @@ func (r CreateCommentRow) Comment() Comment {
 		Revision:           r.Revision,
 		DeletedAt:          r.DeletedAt,
 		SuppressedAgentIds: r.SuppressedAgentIds,
+		TriggerOutcomes:    r.TriggerOutcomes,
+		TriggerAttemptID:   r.TriggerAttemptID,
 	}
 }
 
@@ -32,23 +34,25 @@ func (r CreateCommentRow) Comment() Comment {
 // available on the row for response/event cache reconciliation.
 func (r UpdateCommentRow) Comment() Comment {
 	return Comment{
-		ID:             r.ID,
-		IssueID:        r.IssueID,
-		AuthorType:     r.AuthorType,
-		AuthorID:       r.AuthorID,
-		Content:        r.Content,
-		Type:           r.Type,
-		CreatedAt:      r.CreatedAt,
-		UpdatedAt:      r.UpdatedAt,
-		ParentID:       r.ParentID,
-		WorkspaceID:    r.WorkspaceID,
-		ResolvedAt:     r.ResolvedAt,
-		ResolvedByType: r.ResolvedByType,
-		ResolvedByID:   r.ResolvedByID,
-		SourceTaskID:   r.SourceTaskID,
-		QuickActionID:  r.QuickActionID,
-		ViaPluginID:    r.ViaPluginID,
-		Revision:       r.Revision,
-		DeletedAt:      r.DeletedAt,
+		ID:               r.ID,
+		IssueID:          r.IssueID,
+		AuthorType:       r.AuthorType,
+		AuthorID:         r.AuthorID,
+		Content:          r.Content,
+		Type:             r.Type,
+		CreatedAt:        r.CreatedAt,
+		UpdatedAt:        r.UpdatedAt,
+		ParentID:         r.ParentID,
+		WorkspaceID:      r.WorkspaceID,
+		ResolvedAt:       r.ResolvedAt,
+		ResolvedByType:   r.ResolvedByType,
+		ResolvedByID:     r.ResolvedByID,
+		SourceTaskID:     r.SourceTaskID,
+		QuickActionID:    r.QuickActionID,
+		ViaPluginID:      r.ViaPluginID,
+		Revision:         r.Revision,
+		DeletedAt:        r.DeletedAt,
+		TriggerOutcomes:  r.TriggerOutcomes,
+		TriggerAttemptID: r.TriggerAttemptID,
 	}
 }

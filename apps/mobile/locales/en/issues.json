@@ -1,4 +1,9 @@
 {
+  "trigger_warning": {
+    "submitted": "Not started on submission",
+    "not_allowed": "Not found or no permission",
+    "not_started": "Mention did not start"
+  },
   "tabs": {
     "all": "All",
     "created": "Created",

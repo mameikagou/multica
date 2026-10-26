@@ -9,7 +9,7 @@ import {
 } from "@multica/core/issues/run-steering";
 import type { RecipientEntry } from "../hooks/use-recipient-actions";
 import { renderWithI18n } from "../../test/i18n";
-import { CommentTriggerChips } from "./comment-trigger-chips";
+import { CommentTriggerChips, CommentTriggerWarnings } from "./comment-trigger-chips";
 
 vi.mock("@multica/core/agents", () => ({
   useAgentPresenceDetail: () => ({ availability: "online", workload: "idle" }),
@@ -50,6 +50,37 @@ function entry(agent: CommentTriggerPreviewAgent, state: AgentRunState, chosen?:
   const opts = { canSteer: true, canRestart: true, steerByDefault: true };
   return { agent, state, action: resolveRecipientAction(state, chosen, opts), actions: recipientActions(state, opts) };
 }
+
+describe("CommentTriggerWarnings", () => {
+  it("shows saved failures by their existing mention labels and clears them after an edit", () => {
+    const { rerender } = renderWithI18n(
+      <CommentTriggerWarnings
+        content="[@Go](mention://agent/deadbeef-0001) [@Ops](mention://squad/cafef00d-0002) [@Allowed](mention://agent/deadbeef-0003)"
+        outcomes={[
+          { target_type: "agent", target_id: "deadbeef-0001", status: "blocked", reason_code: "invocation_not_allowed" },
+          { target_type: "squad", target_id: "cafef00d-0002", status: "blocked", reason_code: "runtime_offline" },
+          { target_type: "agent", target_id: "deadbeef-0003", status: "queued", reason_code: "" },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Not started on submission")).toBeInTheDocument();
+    expect(screen.getByText("Go")).toBeInTheDocument();
+    expect(screen.getByText("Ops")).toBeInTheDocument();
+    expect(screen.getByText("Not found or no permission")).toBeInTheDocument();
+    expect(screen.queryByText("Allowed")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/won't be triggered/)).not.toBeInTheDocument();
+    rerender(<CommentTriggerWarnings content="Updated without mentions" outcomes={[]} />);
+    expect(screen.queryByText("Not started on submission")).not.toBeInTheDocument();
+  });
+
+  it("uses a generic warning when the stored target has no mention label", () => {
+    renderWithI18n(<CommentTriggerWarnings outcomes={[
+      { target_type: "agent", target_id: "deadbeef-0001", status: "blocked", reason_code: "invocation_not_allowed" },
+    ]} />);
+    expect(screen.getByText("Not found or no permission")).toBeInTheDocument();
+    expect(screen.queryByText("deadbeef-0001")).not.toBeInTheDocument();
+  });
+});
 
 describe("CommentTriggerChips", () => {
   it("renders nothing without recipients", () => {

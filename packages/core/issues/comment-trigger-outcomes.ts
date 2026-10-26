@@ -1,4 +1,4 @@
-import { CommentTriggerOutcomeSchema } from "../api/schemas";
+import { CommentTriggerOutcomesSchema } from "../api/schemas";
 import type { CommentTriggerOutcome } from "../types/comment";
 
 // Source for a rendered mention in comment markdown, capturing the label the
@@ -57,15 +57,7 @@ export function blockedTriggerLabel(
 // one field the UI branches on is validated here: a non-array yields [], and a
 // malformed entry is dropped individually rather than failing the whole set.
 export function parseCommentTriggerOutcomes(raw: unknown): CommentTriggerOutcome[] {
-  if (!Array.isArray(raw)) return [];
-  const out: CommentTriggerOutcome[] = [];
-  for (const item of raw) {
-    const parsed = CommentTriggerOutcomeSchema.safeParse(item);
-    if (parsed.success) {
-      out.push(parsed.data as CommentTriggerOutcome);
-    }
-  }
-  return out;
+  return CommentTriggerOutcomesSchema.parse(raw);
 }
 
 // The only success-shaped outcome statuses: the mention WAS handled (a run was

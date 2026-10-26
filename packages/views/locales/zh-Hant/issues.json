@@ -542,6 +542,7 @@
     "wakeup_chip_system": "系統規則"
   },
   "comment": {
+    "trigger_not_started_on_submission": "本次提交時未觸發",
     "add_reaction": "新增表情回應",
     "collapse_thread": "收起討論",
     "expand_thread": "展開討論",
