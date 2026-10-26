@@ -4,73 +4,24 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
-type blackholeConn struct {
-	net.Conn
-	drop atomic.Bool
-}
-
-func (c *blackholeConn) Read(buf []byte) (int, error) {
-	for {
-		n, err := c.Conn.Read(buf)
-		if err != nil || !c.drop.Load() {
-			return n, err
-		}
-	}
-}
-
-func (c *blackholeConn) Write(buf []byte) (int, error) {
-	if c.drop.Load() {
-		return len(buf), nil
-	}
-	return c.Conn.Write(buf)
-}
-
-type blackholeListener struct {
-	net.Listener
-	accepted chan *blackholeConn
-}
-
-func (l *blackholeListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
-	}
-	wrapped := &blackholeConn{Conn: conn}
-	l.accepted <- wrapped
-	return wrapped, nil
-}
-
-func newHTTP2TestClient(t *testing.T, handler http.Handler) (*Client, <-chan *blackholeConn) {
+func newHTTP2TestClient(t *testing.T, handler http.Handler) (*Client, <-chan *testutil.BlackholeConn) {
 	t.Helper()
-	server := httptest.NewUnstartedServer(handler)
-	listener := &blackholeListener{Listener: server.Listener, accepted: make(chan *blackholeConn, 16)}
-	server.Listener = listener
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	t.Cleanup(server.Close)
+	server, connections := testutil.NewBlackholeHTTP2Server(t, handler)
 	client := NewClient(server.URL)
 	for _, httpClient := range []*http.Client{client.client, client.bundleClient} {
-		if httpClient.Transport == nil {
-			httpClient.Transport = http.DefaultTransport.(*http.Transport).Clone()
-		}
-		transport := httpClient.Transport.(*http.Transport)
-		transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
-		if transport.HTTP2 != nil {
-			transport.HTTP2.SendPingTimeout /= 100
-			transport.HTTP2.PingTimeout /= 100
-		}
-		t.Cleanup(httpClient.CloseIdleConnections)
+		testutil.TrustHTTP2Server(t, httpClient, server)
 	}
 	client.client.Timeout = 2 * time.Second
-	return client, listener.accepted
+	return client, connections
 }
 
 func TestClientHTTP2RecoversBlackholedConnection(t *testing.T) {
@@ -103,7 +54,7 @@ func TestClientHTTP2RecoversBlackholedConnection(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("POST did not reach server")
 	}
-	conn.drop.Store(true)
+	conn.Drop.Store(true)
 	if err := <-result; err == nil {
 		t.Fatal("interrupted POST unexpectedly succeeded")
 	} else if errors.Is(err, context.DeadlineExceeded) {
@@ -202,7 +153,7 @@ func TestResolveSkillBundleHTTP2RecoversBlackholedConnection(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("bundle request did not reach server")
 	}
-	conn.drop.Store(true)
+	conn.Drop.Store(true)
 	got := <-done
 	if got.err != nil {
 		t.Fatalf("bundle did not recover within its context deadline: %v", got.err)
@@ -264,5 +215,29 @@ func TestResolveSkillBundleHTTP2SlowDownloadUsesContextDeadline(t *testing.T) {
 			default:
 			}
 		})
+	}
+}
+
+func TestClientCloseIdleConnectionsClosesBothPools(t *testing.T) {
+	client, connections := newHTTP2TestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"bundles":[{"id":"skill"}]}`)
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for pass := 0; pass < 2; pass++ {
+		if err := client.getJSON(ctx, "/warm", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := client.ResolveSkillBundle(ctx, "runtime", "task", SkillRefData{ID: "skill"}); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			select {
+			case <-connections:
+			default:
+				t.Fatalf("pass %d: both pools must open their own connection", pass)
+			}
+		}
+		client.CloseIdleConnections()
 	}
 }
