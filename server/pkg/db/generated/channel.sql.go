@@ -364,8 +364,14 @@ type ClaimNextChannelMediaPendingObjectForReconcileParams struct {
 	SettleDelay pgtype.Interval `json:"settle_delay"`
 }
 
-// 每次只领取即将处理的一条记录，让租约和 attempt 对应实际处理。
-// MATERIALIZED 固定本次候选，避免嵌套循环重扫后把 LIMIT 窗口移到下一条。
+// Short-transaction claim of ONE due row, taken immediately before that row is
+// settled. Claiming a whole batch up front made the claim a promise the sweep
+// might not keep: a tail row sat in 'deleting' with attempt already bumped
+// while earlier rows ran, and could expire and be reclaimed before its own
+// DELETE was ever tried, inflating attempt/backoff for work that never
+// happened. One row per claim means attempt counts attempts.
+// MATERIALIZED pins the bounded candidate set so a nested-loop rescan cannot
+// move the LIMIT window to another row after an update.
 //
 // Due means (a) 'pending' rows older than the settle delay — an operational
 // buffer only; correctness comes from the state flip, after which a bind can

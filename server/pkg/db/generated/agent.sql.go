@@ -7953,7 +7953,8 @@ type ReclaimStaleDispatchedTasksForRuntimesParams struct {
 // query (dispatched, never started, past the recovery window, expired/absent
 // prepare lease) and the same dispatched_at refresh; only the runtime filter
 // (= ANY) and the LIMIT (max_tasks instead of 1) differ.
-// 固定本次候选集合，使重领数量始终受 max_tasks 限制。
+// MATERIALIZED pins the candidate set so nested-loop rescans cannot exceed
+// max_tasks.
 func (q *Queries) ReclaimStaleDispatchedTasksForRuntimes(ctx context.Context, arg ReclaimStaleDispatchedTasksForRuntimesParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, reclaimStaleDispatchedTasksForRuntimes,
 		arg.PrepareLeaseSecs,

@@ -130,7 +130,8 @@ WHERE workspace_id = sqlc.arg(workspace_id)
 RETURNING storage_key;
 
 -- name: ClaimSourceContextObjectIntentForCleanup :one
--- 固定本次候选，保证领取操作只给即将处理的一个对象分配租约。
+-- MATERIALIZED pins the single candidate so nested-loop rescans cannot lease
+-- extra objects.
 WITH due AS MATERIALIZED (
     SELECT candidate.storage_key
     FROM issue_source_context_object_intent candidate

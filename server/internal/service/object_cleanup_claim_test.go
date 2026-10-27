@@ -60,7 +60,7 @@ func TestObjectCleanupClaimsOneRowWithStaleStatistics(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer tx.Rollback(context.Background())
-				// 临时表复制真实表结构，统计信息及领取操作只影响本次测试。
+				// Copy the real schema so statistics and claims stay local to this test.
 				table := pgx.Identifier{testCase.table}.Sanitize()
 				if _, err := tx.Exec(ctx, "CREATE TEMP TABLE "+table+" (LIKE public."+table+" INCLUDING ALL) ON COMMIT DROP"); err != nil {
 					t.Fatal(err)
@@ -68,7 +68,7 @@ func TestObjectCleanupClaimsOneRowWithStaleStatistics(t *testing.T) {
 				if _, err := tx.Exec(ctx, testCase.seed, 1, 1, state); err != nil {
 					t.Fatal(err)
 				}
-				// 模拟 ANALYZE 后新增待处理记录；不强制数据库使用某种执行计划。
+				// Add due rows after ANALYZE without forcing a particular query plan.
 				if _, err := tx.Exec(ctx, "ANALYZE "+table); err != nil {
 					t.Fatal(err)
 				}

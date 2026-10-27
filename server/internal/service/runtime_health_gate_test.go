@@ -23,7 +23,7 @@ func TestStaleDispatchRecoveryHonorsBatchLimitWithStaleStatistics(t *testing.T) 
 				t.Fatal(err)
 			}
 			defer tx.Rollback(context.Background())
-			// 复制真实表结构，使统计信息和任务领取只影响本次测试。
+			// Copy the real schemas so statistics and claims stay local to this test.
 			for _, name := range []string{"agent", "agent_runtime", "agent_task_queue"} {
 				table := pgx.Identifier{name}.Sanitize()
 				if _, err := tx.Exec(ctx, "CREATE TEMP TABLE "+table+" (LIKE public."+table+" INCLUDING ALL) ON COMMIT DROP"); err != nil {

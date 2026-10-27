@@ -99,7 +99,8 @@ WHERE intent.storage_key = due.storage_key
 RETURNING intent.storage_key, intent.workspace_id, intent.source_context_id, intent.attachment_id, intent.object_url, intent.state, intent.lease_token, intent.lease_expires_at, intent.next_attempt_at, intent.last_error, intent.created_at
 `
 
-// 固定本次候选，保证领取操作只给即将处理的一个对象分配租约。
+// MATERIALIZED pins the single candidate so nested-loop rescans cannot lease
+// extra objects.
 func (q *Queries) ClaimSourceContextObjectIntentForCleanup(ctx context.Context, leaseToken pgtype.UUID) (IssueSourceContextObjectIntent, error) {
 	row := q.db.QueryRow(ctx, claimSourceContextObjectIntentForCleanup, leaseToken)
 	var i IssueSourceContextObjectIntent
