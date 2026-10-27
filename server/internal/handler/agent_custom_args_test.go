@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,30 +14,34 @@ func TestCreateAgent_CustomArgs(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	runtimeID := dbfx.Runtime(t, "custom-args-claude", testutil.Cols{"provider": "claude"})
+	claudeID := dbfx.Runtime(t, "custom-args-claude", testutil.Cols{"provider": "claude"})
+	ompID := dbfx.Runtime(t, "custom-args-omp", testutil.Cols{"provider": "omp"})
+	piID := dbfx.Runtime(t, "custom-args-pi", testutil.Cols{"provider": "pi"})
 	for _, tc := range []struct {
-		name string
-		args []string
-		want int
+		name         string
+		runtimeID    string
+		args         []string
+		want         int
+		rejectedFlag string
 	}{
-		{"permission mode", []string{"--permission-mode", "dontAsk", "--tools", "Bash"}, http.StatusBadRequest},
-		{"inline permission mode", []string{"--permission-mode=dontAsk"}, http.StatusBadRequest},
-		{"quoted permission mode", []string{"'--permission-mode'", "dontAsk"}, http.StatusBadRequest},
-		{"allowed arguments", []string{"--tools", "Bash", "--allowedTools", "Bash(multica issue *)"}, http.StatusCreated},
-		{"empty arguments", []string{}, http.StatusCreated},
+		{"permission mode", claudeID, []string{"--permission-mode", "dontAsk", "--tools", "Bash"}, http.StatusBadRequest, "--permission-mode"},
+		{"inline permission mode", claudeID, []string{"--permission-mode=dontAsk"}, http.StatusBadRequest, "--permission-mode"},
+		{"quoted permission mode", claudeID, []string{"'--permission-mode'", "dontAsk"}, http.StatusBadRequest, "--permission-mode"},
+		{"allowed arguments", claudeID, []string{"--tools", "Bash", "--allowedTools", "Bash(multica issue *)"}, http.StatusCreated, ""},
+		{"empty arguments", claudeID, []string{}, http.StatusCreated, ""},
+		{"omp no session", ompID, []string{"--no-session"}, http.StatusBadRequest, "--no-session"},
+		{"omp inline session directory", ompID, []string{"--session-dir=/other"}, http.StatusBadRequest, "--session-dir"},
+		{"omp quoted resume", ompID, []string{"'--resume'", "other"}, http.StatusBadRequest, "--resume"},
+		{"pi no session", piID, []string{"--no-session"}, http.StatusCreated, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "custom-args-create-" + tc.name
 			dbfx.Cleanup(t, `DELETE FROM agent WHERE workspace_id = $1 AND name = $2`, testWorkspaceID, name)
-			w := httptest.NewRecorder()
-			testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", map[string]any{
-				"name": name, "runtime_id": runtimeID, "custom_args": tc.args,
-			}))
-			if w.Code != tc.want {
-				t.Fatalf("status = %d, want %d: %s", w.Code, tc.want, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", map[string]any{
+				"name": name, "runtime_id": tc.runtimeID, "custom_args": tc.args,
+			})).Want(tc.want)
 			if tc.want == http.StatusBadRequest {
-				if !strings.Contains(w.Body.String(), "--permission-mode") {
+				if !strings.Contains(w.Body.String(), tc.rejectedFlag) {
 					t.Fatalf("error must identify the rejected flag: %s", w.Body.String())
 				}
 				if count := dbfx.Count(t, `SELECT count(*) FROM agent WHERE workspace_id = $1 AND name = $2`, testWorkspaceID, name); count != 0 {
@@ -55,8 +58,11 @@ func TestUpdateAgent_CustomArgs(t *testing.T) {
 	}
 	claudeID := dbfx.Runtime(t, "custom-args-claude", testutil.Cols{"provider": "claude"})
 	codexID := dbfx.Runtime(t, "custom-args-codex", testutil.Cols{"provider": "codex"})
+	ompID := dbfx.Runtime(t, "custom-args-omp", testutil.Cols{"provider": "omp"})
+	piID := dbfx.Runtime(t, "custom-args-pi", testutil.Cols{"provider": "pi"})
 	allowed := []string{"--verbose"}
 	blocked := []string{"--permission-mode", "dontAsk"}
+	ompBlocked := []string{"--no-session"}
 	for _, tc := range []struct {
 		name       string
 		runtimeID  string
@@ -70,6 +76,12 @@ func TestUpdateAgent_CustomArgs(t *testing.T) {
 		{"switch and clear", codexID, blocked, map[string]any{"runtime_id": claudeID, "custom_args": []string{}}, http.StatusOK, []string{}},
 		{"repair existing args", claudeID, blocked, map[string]any{"custom_args": allowed}, http.StatusOK, allowed},
 		{"rename existing agent", claudeID, blocked, map[string]any{"name": "custom-args-renamed"}, http.StatusOK, blocked},
+		{"reject omp update", ompID, allowed, map[string]any{"custom_args": ompBlocked}, http.StatusBadRequest, allowed},
+		{"reject omp runtime switch", piID, ompBlocked, map[string]any{"runtime_id": ompID}, http.StatusBadRequest, ompBlocked},
+		{"omp switch and clear", piID, ompBlocked, map[string]any{"runtime_id": ompID, "custom_args": []string{}}, http.StatusOK, []string{}},
+		{"repair omp args", ompID, ompBlocked, map[string]any{"custom_args": allowed}, http.StatusOK, allowed},
+		{"allow pi session args", piID, allowed, map[string]any{"custom_args": ompBlocked}, http.StatusOK, ompBlocked},
+		{"switch from omp to pi", ompID, ompBlocked, map[string]any{"runtime_id": piID}, http.StatusOK, ompBlocked},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stored, err := json.Marshal(tc.storedArgs)
@@ -77,11 +89,7 @@ func TestUpdateAgent_CustomArgs(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := dbfx.Agent(t, "custom-args-update-"+tc.name, tc.runtimeID, testutil.Cols{"custom_args": stored})
-			w := httptest.NewRecorder()
-			testHandler.UpdateAgent(w, withURLParam(newRequest(http.MethodPut, "/api/agents/"+id, tc.body), "id", id))
-			if w.Code != tc.want {
-				t.Fatalf("status = %d, want %d: %s", w.Code, tc.want, w.Body.String())
-			}
+			testutil.Call(t, testHandler.UpdateAgent, withURLParam(newRequest(http.MethodPut, "/api/agents/"+id, tc.body), "id", id)).Want(tc.want)
 			var runtimeID string
 			var args []string
 			dbfx.QueryRow(t, `SELECT runtime_id::text, custom_args FROM agent WHERE id = $1`, id).Scan(&runtimeID, &args)

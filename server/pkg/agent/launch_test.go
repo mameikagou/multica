@@ -35,6 +35,19 @@ func TestValidateCustomArgs(t *testing.T) {
 		{"quoted permission mode", "claude", []string{"\"--permission-mode=dontAsk\""}, "--permission-mode"},
 		{"protocol flag", "codex", []string{"--listen", "ws://localhost:1234"}, "--listen"},
 		{"builtin alias", "omp", []string{"--mode", "rpc"}, "--mode"},
+		{"omp session", "omp", []string{"--session", "other"}, "--session"},
+		{"omp session directory", "omp", []string{"--session-dir", "/other"}, "--session-dir"},
+		{"omp no session", "omp", []string{"--no-session"}, "--no-session"},
+		{"omp continue", "omp", []string{"--continue"}, "--continue"},
+		{"omp continue alias", "omp", []string{"-c"}, "-c"},
+		{"omp resume", "omp", []string{"--resume"}, "--resume"},
+		{"omp resume alias", "omp", []string{"-r", "other"}, "-r"},
+		{"omp fork", "omp", []string{"--fork", "other"}, "--fork"},
+		{"omp session id", "omp", []string{"--session-id", "other"}, "--session-id"},
+		{"omp inline session directory", "omp", []string{"--session-dir='/other'"}, "--session-dir"},
+		{"omp quoted resume", "omp", []string{"\"--resume=other\""}, "--resume"},
+		{"pi session options", "pi", []string{"--session-dir", "/other", "--no-session", "--continue", "-c", "--resume", "-r", "--fork", "other", "--session-id", "other"}, ""},
+		{"omp allowed flags", "omp", []string{"--tools", "read"}, ""},
 		{"blocked subcommand", "mcode", []string{"login"}, "login"},
 		{"wire permission mode", "muse", []string{"--yolo"}, "--yolo"},
 		{"allowed flags", "claude", []string{"--tools", "Bash", "--allowedTools", "Bash(multica issue *)"}, ""},
@@ -52,6 +65,9 @@ func TestValidateCustomArgs(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.flag) {
 				t.Fatalf("error = %v, want rejection naming %q", err, tc.flag)
+			}
+			if tc.provider == "omp" && !strings.Contains(err.Error(), `runtime "omp"`) {
+				t.Fatalf("error must identify the OMP runtime: %v", err)
 			}
 		})
 	}

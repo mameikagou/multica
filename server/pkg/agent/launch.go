@@ -472,18 +472,24 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 	"zeroclaw":    zeroclawBlockedArgs,
 }
 
-// ValidateCustomArgs 使用执行端的参数规则，让保存时即可发现必定被丢弃的参数。
+// ValidateCustomArgs rejects arguments that the runtime always discards at launch.
 func ValidateCustomArgs(agentType string, args []string) error {
+	protocolFamily := agentType
 	if family, ok := RuntimeProtocolFamily(agentType); ok {
-		agentType = family
+		protocolFamily = family
 	}
-	blocked := launchPrefixBlockedArgs[agentType]
+	blocked := launchPrefixBlockedArgs[protocolFamily]
 	for _, arg := range args {
 		flag := unshellQuoteArg(arg)
 		if idx := strings.Index(flag, "="); idx > 0 {
 			flag = flag[:idx]
 		}
-		if _, ok := blocked[flag]; ok {
+		_, isBlocked := blocked[flag]
+		if agentType == "omp" {
+			_, sessionArg := ompSessionArgs[flag]
+			isBlocked = isBlocked || sessionArg
+		}
+		if isBlocked {
 			return fmt.Errorf("custom_args: %q is managed by Multica for runtime %q and cannot be overridden; remove it from custom_args", flag, agentType)
 		}
 	}
