@@ -865,7 +865,9 @@ export function useCreateComment(issueId: string) {
         revision: comment.revision,
       };
       const steered = !!comment.supplements?.length;
-      // 创建广播可能早于提及处理结果，回复到达时补齐同一次提交的结果。
+      // Dedupe by id: the `comment:created` WS event may arrive before this
+      // response. Merge its trigger outcomes and steering receipts, preserving
+      // any newer revision already in the cache.
       qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
         if (!old) return [entry];
         if (old.some((e) => e.id === entry.id)) {

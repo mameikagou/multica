@@ -2171,7 +2171,8 @@ type SetCommentTriggerOutcomesParams struct {
 	TriggerAttemptID pgtype.UUID `json:"trigger_attempt_id"`
 }
 
-// 内容编辑会更换 attempt ID；点赞和其他元数据更新不会使本次结果失效。
+// Content edits rotate the attempt ID; reactions and other metadata changes
+// do not invalidate these outcomes.
 func (q *Queries) SetCommentTriggerOutcomes(ctx context.Context, arg SetCommentTriggerOutcomesParams) (Comment, error) {
 	row := q.db.QueryRow(ctx, setCommentTriggerOutcomes,
 		arg.TriggerOutcomes,

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,7 +77,10 @@ type CommentResponse struct {
 	// pulls the folded comments back with `comment list --full`.
 	ThreadResolved *bool `json:"thread_resolved,omitempty"`
 	FoldedCount    *int  `json:"folded_count,omitempty"`
-	// TriggerOutcomes 保存本次内容提交时的结果，供后续读者查看当时未触发的原因。
+	// TriggerOutcomes is the per-target result of every explicit @agent / @squad
+	// mention at submission time (MUL-4525 §2). Saved warning receipts let later
+	// readers see why a mention did not trigger. The field is additive: old
+	// clients ignore it.
 	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
 	// Supplements lists every running turn this comment steered, one receipt
 	// per run. The single supplement_* fields mirror the first receipt for
@@ -1916,8 +1920,16 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		"issue_revision":      created.IssueRevision,
 	})
 
+	// A reply in a resolved thread re-opens it. Done after CreateComment commits
+	// so the reply is visible regardless of the unresolve outcome. Shared with
+	// the agent task path (TaskService.createAgentComment) — both reply paths
+	// must keep the resolved root in sync.
 	h.TaskService.AutoUnresolveThreadOnReply(r.Context(), rootComment, uuidToString(issue.WorkspaceID), authorType, authorID, h.wakeupSourceTaskID(r))
+
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
+	// The comment is already saved; a blocked mention must not fail the whole
+	// request. Surface the per-target outcomes so the client can show partial
+	// success instead of a silent no-op (MUL-4525 §2).
 	comment, outcomes := h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, steerTaskIDs)
 	resp = h.commentTriggerResponse(r, resp, comment, outcomes, authorType, authorID)
 
@@ -1988,7 +2000,16 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 }
 
 func (h *Handler) saveCommentTriggerOutcomes(ctx context.Context, comment db.Comment, outcomes []CommentTriggerOutcome) db.Comment {
-	if len(outcomes) == 0 {
+	// Handled mentions still return their outcomes to the caller, but only
+	// warnings need a durable receipt and a second realtime update.
+	if !slices.ContainsFunc(outcomes, func(outcome CommentTriggerOutcome) bool {
+		switch outcome.Status {
+		case DispatchQueued, DispatchCoalesced, DispatchDeferred, DispatchSteered:
+			return false
+		default:
+			return true
+		}
+	}) {
 		return comment
 	}
 	raw, err := json.Marshal(outcomes)
@@ -2015,7 +2036,8 @@ func (h *Handler) commentTriggerResponse(r *http.Request, before CommentResponse
 		resp := commentToResponse(comment, h.groupReactions(r, ids)[cid], h.groupAttachments(r, ids)[cid])
 		resp.IssueRevision = before.IssueRevision
 		applyCommentSupplements(&resp, h.listCommentSupplements(r.Context(), comment.WorkspaceID, ids)[cid])
-		// 先广播内容，再广播成功保存的结果；过期提交不会覆盖后续编辑或删除。
+		// Broadcast the saved receipt after the content. The attempt guard rejects
+		// stale results after a later content edit or deletion.
 		h.publish(protocol.EventCommentUpdated, uuidToString(comment.WorkspaceID), actorType, actorID, map[string]any{"comment": resp})
 		return resp
 	}

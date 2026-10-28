@@ -1056,6 +1056,9 @@ const CommentSupplementReceiptsSchema = z.array(z.unknown()).optional().catch(un
     return parsed.success ? [parsed.data] : [];
   }));
 
+// Per-target outcome of an explicit @agent / @squad mention (MUL-4525 §2).
+// target_id is required to correlate with the client's rendered mention; a
+// malformed entry (missing id) is dropped rather than failing the whole payload.
 export const CommentTriggerOutcomeSchema = z.object({
   target_type: z.string().default(""),
   target_id: z.string(),

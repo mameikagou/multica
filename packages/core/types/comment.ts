@@ -44,7 +44,8 @@ export interface Comment {
   // server keeps an empty tombstone so the replies keep their parent. Older
   // servers omit it.
   deleted_at?: string | null;
-  // 保存本次内容提交时各个显式提及的结果，供后续读者查看。
+  // Per-target results of explicit @agent / @squad mentions at submission time.
+  // Warning receipts persist for later readers; older servers omit this field.
   trigger_outcomes?: CommentTriggerOutcome[];
   /** Every running turn this comment steered, one receipt per run. */
   supplements?: CommentSupplementReceipt[];

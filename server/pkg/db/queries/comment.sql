@@ -592,7 +592,8 @@ SELECT updated_comment.id, updated_comment.issue_id, updated_comment.author_type
 FROM updated_comment;
 
 -- name: SetCommentTriggerOutcomes :one
--- 内容编辑会更换 attempt ID；点赞和其他元数据更新不会使本次结果失效。
+-- Content edits rotate the attempt ID; reactions and other metadata changes
+-- do not invalidate these outcomes.
 UPDATE comment SET
     trigger_outcomes = @trigger_outcomes,
     revision = revision + 1

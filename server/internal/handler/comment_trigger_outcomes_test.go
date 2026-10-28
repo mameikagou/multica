@@ -26,6 +26,60 @@ func findCommentOutcome(t *testing.T, outcomes []CommentTriggerOutcome, targetID
 	return CommentTriggerOutcome{}
 }
 
+func TestCommentTriggerOutcomesSkipHandledReceipts(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		statuses   []DispatchStatus
+		wantStored bool
+	}{
+		{name: "no mentions"},
+		{name: "queued", statuses: []DispatchStatus{DispatchQueued}},
+		{name: "coalesced", statuses: []DispatchStatus{DispatchCoalesced}},
+		{name: "deferred", statuses: []DispatchStatus{DispatchDeferred}},
+		{name: "steered", statuses: []DispatchStatus{DispatchSteered}},
+		{name: "all handled", statuses: []DispatchStatus{DispatchQueued, DispatchCoalesced, DispatchDeferred, DispatchSteered}},
+		{name: "partially blocked", statuses: []DispatchStatus{DispatchQueued, DispatchBlocked}, wantStored: true},
+		{name: "unknown status", statuses: []DispatchStatus{"future"}, wantStored: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issueID := dbfx.Issue(t, "mention receipt "+tc.name)
+			commentID := dbfx.Comment(t, issueID, "handoff")
+			initial, err := testHandler.Queries.GetComment(ctx, parseUUID(commentID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcomes := make([]CommentTriggerOutcome, 0, len(tc.statuses))
+			for i, status := range tc.statuses {
+				outcomes = append(outcomes, CommentTriggerOutcome{TargetType: "agent", TargetID: fmt.Sprintf("target-%d", i), Status: status})
+			}
+			h := *testHandler
+			h.Bus = events.New()
+			broadcasts := 0
+			h.Bus.Subscribe(protocol.EventCommentUpdated, func(events.Event) { broadcasts++ })
+			saved := h.saveCommentTriggerOutcomes(ctx, initial, outcomes)
+			response := h.commentTriggerResponse(newRequest(http.MethodPost, "/", nil), commentToResponse(initial, nil, nil), saved, outcomes, "member", testUserID)
+			if !reflect.DeepEqual(response.TriggerOutcomes, outcomes) {
+				t.Errorf("submission outcomes = %+v, want %+v", response.TriggerOutcomes, outcomes)
+			}
+			current, err := h.Queries.GetComment(ctx, initial.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantStored {
+				if !reflect.DeepEqual(storedCommentTriggerOutcomes(current), outcomes) || current.Revision != initial.Revision+1 || broadcasts != 1 {
+					t.Errorf("warning receipt not saved and broadcast: outcomes=%+v revision=%d broadcasts=%d", storedCommentTriggerOutcomes(current), current.Revision, broadcasts)
+				}
+			} else if len(storedCommentTriggerOutcomes(current)) != 0 || current.Revision != initial.Revision || broadcasts != 0 {
+				t.Errorf("handled mentions caused a receipt write or broadcast: outcomes=%+v revision=%d broadcasts=%d", storedCommentTriggerOutcomes(current), current.Revision, broadcasts)
+			}
+		})
+	}
+}
+
 func TestCommentTriggerOutcomesPersistAcrossReadsAndEdits(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -100,6 +154,10 @@ func TestCommentTriggerOutcomesPersistAcrossReadsAndEdits(t *testing.T) {
 	}), "commentId", created.ID)).Want(http.StatusOK).JSON(&updated)
 	if len(updated.TriggerOutcomes) != 1 || updated.TriggerOutcomes[0].Status == DispatchBlocked {
 		t.Errorf("successful edited handoff = %+v", updated.TriggerOutcomes)
+	}
+	_, comments = listComments(t, issueID, "")
+	if len(comments) != 1 || len(comments[0].TriggerOutcomes) != 0 || len(broadcast.TriggerOutcomes) != 0 {
+		t.Errorf("successful handoff stored or broadcast a warning receipt: comments=%+v broadcast=%+v", comments, broadcast.TriggerOutcomes)
 	}
 }
 
